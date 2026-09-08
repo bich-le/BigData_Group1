@@ -73,4 +73,8 @@ python -c "import numpy; print('numpy', numpy.__version__)"
 python -c "import mlflow; print('mlflow', mlflow.__version__)"
 ```
 
+## Chuẩn bị dữ liệu local
+
+Mỗi thành viên tự đặt raw CSV trong `data/raw` và tạo typed Parquet tại `data/typed-parquet`. Xem lệnh dành riêng cho WSL/Bash và PowerShell trong [hướng dẫn chuẩn bị dữ liệu](data/README.md); WSL/Linux được khuyến nghị cho bước ghi Parquet.
+
 Các file Python hiện tại mới là bộ khung của đồ án; các chức năng xử lý dữ liệu, pipeline, mô hình và streaming chưa được triển khai.
