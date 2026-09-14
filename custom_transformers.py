@@ -3,6 +3,15 @@ custom_transformers.py
 
 Custom PySpark Transformer classes & PyArrow-accelerated pandas_udf
 cho phase Custom & Feature Engineering.
+
+Deliverable chính thức theo cấu trúc nộp bài (Task 1, 15/100 điểm).
+
+Nội dung file này sẽ được bổ sung dần theo tracker:
+  [x] Section 1 — Haversine distance (pandas_udf) + fallback DOT/IATA
+  [x] Section 2 — OutlierIQRTruncator (+ binary outlier flag)
+  [x] Section 3 — Leakage-safe Target Encoder (giữ code, không dùng training)
+  [x] Section 4 — Feature cơ bản (giờ, route congestion)
+  [x] Section 5 — 5 cấp độ (Airline/Airport/Airplane/Flight/Temporal-level)
 """
 
 import numpy as np
@@ -14,13 +23,8 @@ from pyspark.ml.param import Param, Params, TypeConverters
 from pyspark.ml.param.shared import HasInputCols, HasOutputCols
 from pyspark.ml.util import DefaultParamsReadable, DefaultParamsWritable
 from pyspark.sql import functions as F
+from pyspark.sql import Window
 from pyspark.sql.types import DoubleType
-
-import os
-import sys
-
-os.environ["PYSPARK_PYTHON"] = sys.executable
-os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 # =============================================================================
 # SECTION 1 — Haversine distance feature (pandas_udf, Arrow-accelerated)
@@ -198,8 +202,8 @@ if __name__ == "__main__":
 
     spark = SparkSession.builder.appName("custom_transformers_sanity_check").getOrCreate()
 
-    flights = spark.read.parquet("data/parquet/flights")
-    airports = spark.read.parquet("data/parquet/airports")
+    flights = spark.read.parquet("data/typed-parquet/flights")
+    airports = spark.read.parquet("data/typed-parquet/airports")
 
     eligible = flights.filter(
         (F.col("ARRIVAL_DELAY").isNotNull())
@@ -228,14 +232,27 @@ if __name__ == "__main__":
 # SECTION 2 — OutlierIQRTruncator (Estimator/Model pair)
 # =============================================================================
 #
-# LƯU Ý QUAN TRỌNG (đã điều chỉnh so với kế hoạch ban đầu):
-#   - KHÔNG áp dụng lên DEPARTURE_DELAY: đây là cột leakage (post-departure),
-#     đã bị loại khỏi feature set theo data_dictionary.md.
-#   - KHÔNG áp dụng lên ARRIVAL_DELAY: đây là TARGET của bài toán regression.
-#     Clip trực tiếp label sẽ làm sai lệch định nghĩa bài toán (model sẽ học
-#     để dự đoán một target đã bị bóp méo, không phải ARRIVAL_DELAY thật).
-#   - Áp dụng lên feature pre-departure có khả năng lệch/outlier:
-#     distance_feature_km (Section 1), SCHEDULED_TIME.
+# LƯU Ý QUAN TRỌNG (đã cập nhật sau review của modeling team):
+#   - Class này KHÔNG hardcode giả định về việc cột nào được phép dùng làm
+#     feature (VD DEPARTURE_DELAY có hợp lệ hay không hiện đang được nhóm
+#     tranh luận lại về inference contract) -- quyết định "cột nào đưa vào"
+#     thuộc về feature_dictionary.md, không phải trách nhiệm của transformer
+#     generic này. Transformer chỉ nhận inputCols theo tham số và xử lý
+#     đúng thống kê, bất kể ý nghĩa nghiệp vụ của cột đó.
+#   - KHÔNG áp dụng lên ARRIVAL_DELAY (target): clip trực tiếp label sẽ làm
+#     sai lệch định nghĩa bài toán regression -- đây là ràng buộc CỐ ĐỊNH,
+#     không phụ thuộc vào tranh luận inference contract.
+#
+# QUYẾT ĐỊNH MỚI (review modeling team, 2026):
+#   - Giá trị đã CLIP (distance_feature_km_clipped, scheduled_time_clipped)
+#     VẪN được tính (đáp ứng yêu cầu đề bài, Task 1 rubric) nhưng KHÔNG đưa
+#     vào feature set training -- lý do: (1) tree-based model (RF/GBT) đã
+#     tự robust với outlier, clip không giúp ích; (2) clip làm mất thông tin
+#     thật (route dài thật không phải noise), khó vận hành thực tế.
+#   - Thay vào đó, thêm BINARY FLAG (outlierFlagCols) đánh dấu quan sát nằm
+#     ngoài [Q1, Q3] (KHÔNG nhân IQR multiplier) -- flag này MỚI là feature
+#     được đưa vào training, giữ nguyên giá trị gốc, chỉ thêm tín hiệu
+#     "quan sát này có bất thường hay không".
 #
 # Thiết kế Estimator/Model (không subclass Transformer trực tiếp như mô tả
 # ngắn gọn trong đề) vì: bounds (Q1, Q3, IQR) BẮT BUỘC chỉ được tính trên
@@ -261,6 +278,23 @@ class HasIQRMultiplier(Params):
         return self.getOrDefault(self.iqrMultiplier)
 
 
+class HasOutlierFlagCols(Params):
+    """Danh sách tên cột binary flag (song song với outputCols) đánh dấu
+    quan sát nằm ngoài [Q1, Q3] -- KHÔNG dùng bound đã nhân iqrMultiplier.
+    Để trống (danh sách rỗng) nếu không cần flag cho cột đó."""
+
+    outlierFlagCols = Param(
+        Params._dummy(),
+        "outlierFlagCols",
+        "Danh sách tên cột flag binary (song song với outputCols); dùng '' "
+        "cho vị trí không cần flag",
+        typeConverter=TypeConverters.toListString,
+    )
+
+    def getOutlierFlagCols(self):
+        return self.getOrDefault(self.outlierFlagCols)
+
+
 class HasBoundsMap(Params):
     """Lưu toàn bộ IQR bounds dạng JSON string trong 1 Param — bắt buộc để
     tương thích với DefaultParamsWritable/Readable (Spark ML chỉ serialize
@@ -284,6 +318,7 @@ class OutlierIQRTruncator(
     HasInputCols,
     HasOutputCols,
     HasIQRMultiplier,
+    HasOutlierFlagCols,
     DefaultParamsReadable,
     DefaultParamsWritable,
 ):
@@ -299,14 +334,14 @@ class OutlierIQRTruncator(
     """
 
     @keyword_only
-    def __init__(self, inputCols=None, outputCols=None, iqrMultiplier=1.5):
+    def __init__(self, inputCols=None, outputCols=None, iqrMultiplier=1.5, outlierFlagCols=None):
         super(OutlierIQRTruncator, self).__init__()
-        self._setDefault(iqrMultiplier=1.5)
+        self._setDefault(iqrMultiplier=1.5, outlierFlagCols=[])
         kwargs = self._input_kwargs
         self._set(**kwargs)
 
     @keyword_only
-    def setParams(self, inputCols=None, outputCols=None, iqrMultiplier=1.5):
+    def setParams(self, inputCols=None, outputCols=None, iqrMultiplier=1.5, outlierFlagCols=None):
         kwargs = self._input_kwargs
         return self._set(**kwargs)
 
@@ -314,20 +349,33 @@ class OutlierIQRTruncator(
         input_cols = self.getInputCols()
         output_cols = self.getOutputCols()
         multiplier = self.getIqrMultiplier()
+        flag_cols = self.getOutlierFlagCols() or []
 
         if len(input_cols) != len(output_cols):
             raise ValueError("inputCols và outputCols phải cùng độ dài")
+        if flag_cols and len(flag_cols) != len(input_cols):
+            raise ValueError("outlierFlagCols (nếu dùng) phải cùng độ dài với inputCols")
 
         bounds = {}
-        for in_col, out_col in zip(input_cols, output_cols):
+        for idx, (in_col, out_col) in enumerate(zip(input_cols, output_cols)):
             q1, q3 = dataset.approxQuantile(in_col, [0.25, 0.75], relativeError=0.01)
             iqr = q3 - q1
             lower = q1 - multiplier * iqr
             upper = q3 + multiplier * iqr
-            bounds[out_col] = {"input_col": in_col, "lower": lower, "upper": upper}
+            flag_col = flag_cols[idx] if flag_cols else ""
+            bounds[out_col] = {
+                "input_col": in_col,
+                "q1": q1,
+                "q3": q3,
+                "lower": lower,
+                "upper": upper,
+                "flag_col": flag_col,
+            }
 
         bounds_json = json.dumps(bounds)
-        return OutlierIQRTruncatorModel(inputCols=input_cols, outputCols=output_cols, boundsMapJson=bounds_json)
+        return OutlierIQRTruncatorModel(
+            inputCols=input_cols, outputCols=output_cols, boundsMapJson=bounds_json
+        )
 
 
 class OutlierIQRTruncatorModel(
@@ -341,6 +389,13 @@ class OutlierIQRTruncatorModel(
 
     Bounds lưu qua Param JSON (boundsMapJson), không phải thuộc tính Python
     thường -- đảm bảo model.save()/load() hoạt động đúng.
+
+    Ngoài cột đã CLIP (output_col), nếu bounds có ghi flag_col (đặt qua
+    outlierFlagCols khi khởi tạo Estimator), Model sẽ tự thêm cột binary
+    flag = 1 nếu giá trị gốc nằm ngoài [Q1, Q3] (KHÔNG nhân multiplier),
+    = 0 nếu trong khoảng. Flag này là feature ĐƯỢC dùng cho training; cột
+    đã clip chỉ giữ lại để đáp ứng yêu cầu đề bài, KHÔNG đưa vào training
+    (xem quyết định ở đầu Section 2 và feature_dictionary.md).
     """
 
     @keyword_only
@@ -362,6 +417,15 @@ class OutlierIQRTruncatorModel(
                 .when(F.col(in_col) > F.lit(upper), F.lit(upper))
                 .otherwise(F.col(in_col)),
             )
+            flag_col = info.get("flag_col", "")
+            if flag_col:
+                q1, q3 = info["q1"], info["q3"]
+                result = result.withColumn(
+                    flag_col,
+                    F.when(
+                        (F.col(in_col) < F.lit(q1)) | (F.col(in_col) > F.lit(q3)), F.lit(1)
+                    ).otherwise(F.lit(0)),
+                )
         return result
 
     def bounds_summary(self) -> pd.DataFrame:
@@ -372,8 +436,11 @@ class OutlierIQRTruncatorModel(
             {
                 "output_col": out_col,
                 "input_col": info["input_col"],
+                "q1": info["q1"],
+                "q3": info["q3"],
                 "lower_bound": info["lower"],
                 "upper_bound": info["upper"],
+                "flag_col": info.get("flag_col", ""),
             }
             for out_col, info in bounds.items()
         ]
@@ -384,8 +451,8 @@ class OutlierIQRTruncatorModel(
 # Sanity check cho Section 2
 # -----------------------------------------------------------------------------
 def _section2_sanity_check(spark):
-    flights = spark.read.parquet("data/parquet/flights")
-    airports = spark.read.parquet("data/parquet/airports")
+    flights = spark.read.parquet("data/typed-parquet/flights")
+    airports = spark.read.parquet("data/typed-parquet/airports")
 
     eligible = flights.filter(
         (F.col("ARRIVAL_DELAY").isNotNull())
@@ -705,3 +772,289 @@ def add_route_congestion_feature(
         F.count(F.lit(1)).alias(output_col)
     )
     return flights_df.join(congestion, on=window_cols, how="left")
+
+
+# =============================================================================
+# SECTION 5 — Feature theo 5 cấp độ (Airline / Airport / Airplane / Flight /
+# Temporal-level), theo đề xuất review của modeling team.
+# =============================================================================
+#
+# BỐI CẢNH: modeling team đề xuất tổ chức lại feature theo 5 nhóm thay vì
+# rời rạc như Section 1-4. Migrate 2 hàm lag từ feature_derivation_functions.py
+# (file KHÔNG được push git theo xác nhận của nhóm) vào đây để không bị mất.
+#
+# NGUYÊN TẮC LEAK-SAFE CHUNG:
+#   - Feature LOOKBACK (lịch sử ARRIVAL_DELAY/DEPARTURE_DELAY của CÁC CHUYẾN
+#     KHÁC, không phải chuyến đang xét): cắt theo TIMESTAMP THẬT
+#     (NGAY_DL + SCHEDULED_DEPARTURE), KHÔNG chỉ theo ranh giới ngày -- tránh
+#     leak nội bộ ngày t (chuyến 8h sáng không được dùng dữ liệu chuyến 8h tối
+#     cùng ngày, dù "kỳ 1 ngày" có bao gồm ngày t).
+#   - Feature SCHEDULE-BASED (đếm số chuyến theo lịch, không dùng outcome):
+#     an toàn dùng dữ liệu CẢ NGÀY (kể cả "sau" thời điểm quan sát), vì lịch
+#     bay đã được setting sẵn từ trước -- đây là điểm modeling team lưu ý
+#     riêng cho Airport-level.
+#   - Feature dùng DEPARTURE_DELAY của CHÍNH chuyến đang xét (Flight-level):
+#     CHỈ hợp lệ theo kịch bản "CÓ DÙNG" trong feature_dictionary.md. Nếu
+#     nhóm chốt theo kịch bản "KHÔNG DÙNG", phải bỏ các feature này (đã
+#     tách riêng thành build_flight_level_features() để dễ loại bỏ).
+#
+# Kỳ phái sinh (đã chốt wording với nhóm): ngày hiện tại là t; kỳ 1 ngày =
+# {t}; kỳ 3 ngày = {t-2,t-1,t}; kỳ 7 ngày = {t-6,...,t}. Về mặt code, điều
+# này được thỏa mãn TỰ NHIÊN bằng cách cắt cửa sổ theo epoch-SECONDS (không
+# phải epoch-day) và luôn dùng rangeBetween(-lookback_seconds, -1): mọi
+# dòng có timestamp SỚM HƠN dòng hiện tại trong vòng N ngày, kể cả cùng
+# ngày t, đều được tính -- không cần xử lý "bao gồm ngày t" như 1 case riêng.
+
+
+def safe_divide(numerator_col, denominator_col):
+    """
+    Phép chia có thay giá trị đặc biệt (theo đúng rule bảng "Rule Phái Sinh"
+    mẫu credit risk mà modeling team gửi, áp dụng nhất quán toàn dự án):
+      (1) Nếu tử HOẶC mẫu là NULL -> NULL
+      (2) Elif tử == 0 VÀ mẫu == 0 -> 0
+      (3) Elif mẫu == 0 VÀ tử > 0 -> 99999.9999
+      (4) Elif mẫu == 0 VÀ tử < 0 -> -99999.9999
+      (5) Else -> tử / mẫu (phép chia thông thường)
+    """
+    return (
+        F.when(numerator_col.isNull() | denominator_col.isNull(), F.lit(None))
+        .when((numerator_col == 0) & (denominator_col == 0), F.lit(0.0))
+        .when((denominator_col == 0) & (numerator_col > 0), F.lit(99999.9999))
+        .when((denominator_col == 0) & (numerator_col < 0), F.lit(-99999.9999))
+        .otherwise(numerator_col / denominator_col)
+    )
+
+
+def add_flight_timestamp_column(
+    flights_df,
+    date_cols=("YEAR", "MONTH", "DAY"),
+    time_col: str = "SCHEDULED_DEPARTURE",
+    output_col: str = "flight_timestamp",
+):
+    """
+    Dựng timestamp THẬT (không chỉ ngày) từ YEAR/MONTH/DAY + SCHEDULED_DEPARTURE
+    (HHMM), cộng thêm cột epoch-seconds để dùng cho Window.rangeBetween --
+    đây là điều kiện bắt buộc để cắt cửa sổ lookback theo timestamp thay vì
+    chỉ theo ranh giới ngày (tránh leak nội bộ ngày t).
+
+    Xử lý convention "2400" (data_dictionary.md ghi là hợp lệ) -> quy về
+    00:00 NGÀY HÔM SAU (khác với add_scheduled_hour_feature ở Section 4, nơi
+    "2400" quy về giờ 0 CÙNG ngày để phục vụ mục đích khác -- ở đây cần đúng
+    thứ tự thời gian tuyệt đối nên phải cộng thêm 1 ngày).
+    """
+    year_col, month_col, day_col = date_cols
+    padded_time = F.lpad(F.col(time_col), 4, "0")
+    hour = F.substring(padded_time, 1, 2).cast("int")
+    minute = F.substring(padded_time, 3, 2).cast("int")
+
+    base_date = F.to_date(F.concat_ws("-", F.col(year_col), F.col(month_col), F.col(day_col)))
+    is_2400 = hour == 24
+
+    date_part = F.when(is_2400, F.date_add(base_date, 1)).otherwise(base_date)
+    hour_part = F.when(is_2400, F.lit(0)).otherwise(hour)
+
+    timestamp_col = F.to_timestamp(
+        F.concat_ws(
+            " ",
+            F.date_format(date_part, "yyyy-MM-dd"),
+            F.format_string("%02d:%02d:00", hour_part, minute),
+        )
+    )
+    df = flights_df.withColumn(output_col, timestamp_col)
+    return df.withColumn(f"_{output_col}_epoch", F.col(output_col).cast("long"))
+
+
+def derive_lookback_agg(
+    df,
+    partition_cols: list,
+    output_col: str,
+    lookback_days: float,
+    agg_fn,
+    target_col: str,
+    timestamp_epoch_col: str = "_flight_timestamp_epoch",
+):
+    """
+    Thống kê rolling theo composite key (partition_cols), cắt cửa sổ THEO
+    TIMESTAMP THẬT (không phải theo ngày): chỉ dùng các dòng có timestamp
+    NHỎ HƠN (strictly before) dòng hiện tại, trong vòng lookback_days ngày
+    gần nhất -- point-in-time correct tuyệt đối, kể cả trong cùng ngày t.
+
+    partition_cols : list các cột định nghĩa entity (VD ["AIRLINE"],
+                      ["ORIGIN_AIRPORT"], ["TAIL_NUMBER"])
+    lookback_days   : số ngày look-back (có thể lẻ, VD 0.5 cho 12 giờ)
+    agg_fn          : F.avg, F.max, F.min, F.sum, hoặc lambda c: F.count(c)
+    target_col      : cột dùng để tính thống kê (VD ARRIVAL_DELAY, DEPARTURE_DELAY)
+
+    Yêu cầu: df đã có cột timestamp_epoch_col (chạy add_flight_timestamp_column
+    trước khi gọi hàm này).
+    """
+    lookback_seconds = int(lookback_days * 86400)
+    window = (
+        Window.partitionBy(*partition_cols)
+        .orderBy(timestamp_epoch_col)
+        .rangeBetween(-lookback_seconds, -1)
+    )
+    return df.withColumn(output_col, agg_fn(F.col(target_col)).over(window))
+
+
+def derive_schedule_count(df, group_cols: list, output_col: str):
+    """
+    Đếm số bản ghi theo composite key thuộc về LỊCH BAY (không phải outcome)
+    -- an toàn dùng dữ liệu CẢ NGÀY, kể cả "sau" thời điểm quan sát, vì lịch
+    đã setting sẵn từ trước (áp dụng cho Airport-level theo đúng lưu ý của
+    modeling team). Khác về bản chất với derive_lookback_agg (không cắt theo
+    timestamp, không cần point-in-time).
+    """
+    counts = df.groupBy(*group_cols).agg(F.count(F.lit(1)).alias(output_col))
+    return df.join(counts, on=group_cols, how="left")
+
+
+# -----------------------------------------------------------------------------
+# 5.1 — Airline-level: composite key (AIRLINE, NGAY_DL, SCHEDULED_DEPARTURE)
+# Entity lookback thực chất là AIRLINE; composite key mô tả điểm "as-of" (mốc
+# thời gian cắt cửa sổ) chính là timestamp của dòng hiện tại.
+#
+# CẬP NHẬT (chốt với modeling team):
+#   - Ngưỡng "late": ARRIVAL_DELAY > 30 (khớp label_severe_delay đã có sẵn
+#     trong dataset, thay cho ngưỡng >0 tạm dùng trước đó).
+#   - Hỗ trợ NHIỀU cửa sổ lookback cùng lúc (1/3/7 ngày theo đúng kỳ phái
+#     sinh đã chốt), mỗi cửa sổ có suffix riêng trong tên cột (VD
+#     "airline_late_flights_count_lag1d", "..._lag7d") -- sửa đúng vấn đề
+#     "ghi đè cột cũ" đã phát hiện trước đó.
+# -----------------------------------------------------------------------------
+def _window_suffix(lookback_days) -> str:
+    """VD 1 -> '_lag1d', 3 -> '_lag3d', 0.5 -> '_lag0.5d'"""
+    n = int(lookback_days) if float(lookback_days).is_integer() else lookback_days
+    return f"_lag{n}d"
+
+
+LATE_ARRIVAL_THRESHOLD_MINUTES = 30  # đã chốt với modeling team, khớp label_severe_delay
+
+
+def build_airline_level_features(df, lookback_windows=(1, 3, 7), late_threshold=LATE_ARRIVAL_THRESHOLD_MINUTES):
+    """
+    lookback_windows : tuple/list các cửa sổ look-back (ngày), mỗi cửa sổ sinh
+                        ra 1 bộ cột riêng, phân biệt bằng suffix (VD _lag1d).
+    late_threshold    : ngưỡng ARRIVAL_DELAY để tính là "late" (mặc định 30,
+                         đã chốt với modeling team).
+    """
+    for w in lookback_windows:
+        suf = _window_suffix(w)
+        df = derive_lookback_agg(
+            df, ["AIRLINE"], f"airline_late_flights_count{suf}", w,
+            agg_fn=lambda c: F.sum(F.when(c > late_threshold, 1).otherwise(0)), target_col="ARRIVAL_DELAY",
+        )
+        df = derive_lookback_agg(
+            df, ["AIRLINE"], f"airline_total_delay_minutes{suf}", w,
+            agg_fn=F.sum, target_col="ARRIVAL_DELAY",
+        )
+        df = derive_lookback_agg(
+            df, ["AIRLINE"], f"airline_flights_count{suf}", w,
+            agg_fn=lambda c: F.count(c), target_col="ARRIVAL_DELAY",
+        )
+        df = derive_lookback_agg(
+            df, ["AIRLINE"], f"airline_distinct_tails_late{suf}", w,
+            agg_fn=lambda c: F.approx_count_distinct(F.when(c > late_threshold, F.col("TAIL_NUMBER"))),
+            target_col="ARRIVAL_DELAY",
+        )
+        df = df.withColumn(
+            f"airline_late_flight_ratio{suf}",
+            safe_divide(F.col(f"airline_late_flights_count{suf}"), F.col(f"airline_flights_count{suf}")),
+        )
+        df = df.withColumn(
+            f"airline_delay_per_tail{suf}",
+            safe_divide(F.col(f"airline_total_delay_minutes{suf}"), F.col(f"airline_distinct_tails_late{suf}")),
+        )
+    return df
+
+
+# -----------------------------------------------------------------------------
+# 5.2 — Airport-level: composite key (ORIGIN_AIRPORT, NGAY_DL, SCHEDULED_DEPARTURE)
+# Có 2 loại: (a) schedule-based (an toàn dùng cả ngày, không cần multi-window
+# vì luôn là "trong ngày"), (b) lookback (delay lịch sử, hỗ trợ multi-window).
+# -----------------------------------------------------------------------------
+def build_airport_level_features(df, lookback_windows=(1, 3, 7), late_threshold=LATE_ARRIVAL_THRESHOLD_MINUTES):
+    # (a) Schedule-based -- an toàn dùng cả ngày vì là lịch bay, không phải outcome
+    df = derive_schedule_count(df, ["ORIGIN_AIRPORT", "YEAR", "MONTH", "DAY"], "airport_scheduled_departures_same_day")
+    df = derive_schedule_count(df, ["DESTINATION_AIRPORT", "YEAR", "MONTH", "DAY"], "airport_scheduled_arrivals_same_day")
+
+    # (b) Lookback -- lịch sử delay tại sân bay, PHẢI cắt theo timestamp
+    for w in lookback_windows:
+        suf = _window_suffix(w)
+        df = derive_lookback_agg(
+            df, ["ORIGIN_AIRPORT"], f"airport_late_flights_count{suf}", w,
+            agg_fn=lambda c: F.sum(F.when(c > late_threshold, 1).otherwise(0)), target_col="ARRIVAL_DELAY",
+        )
+        df = derive_lookback_agg(
+            df, ["ORIGIN_AIRPORT"], f"airport_avg_delay{suf}", w,
+            agg_fn=F.avg, target_col="ARRIVAL_DELAY",
+        )
+    return df
+
+
+# -----------------------------------------------------------------------------
+# 5.3 — Airplane-level: composite key (TAIL_NUMBER, NGAY_DL, SCHEDULED_DEPARTURE)
+# -----------------------------------------------------------------------------
+def build_airplane_level_features(df, lookback_windows=(1, 3, 7)):
+    # Số chuyến máy bay PHẢI thực hiện trong ngày -- schedule-based, an toàn
+    # dùng cả ngày (máy bay được gán lịch bay trước, không phải outcome).
+    # KHÔNG cần multi-window vì luôn là "trong ngày hiện tại".
+    df = derive_schedule_count(df, ["TAIL_NUMBER", "YEAR", "MONTH", "DAY"], "airplane_flights_scheduled_same_day")
+
+    # Lookback -- lịch sử delay của chính máy bay đó, hỗ trợ multi-window
+    for w in lookback_windows:
+        suf = _window_suffix(w)
+        df = derive_lookback_agg(
+            df, ["TAIL_NUMBER"], f"airplane_total_delay_minutes{suf}", w,
+            agg_fn=F.sum, target_col="ARRIVAL_DELAY",
+        )
+        df = df.withColumn(
+            f"airplane_delay_per_km{suf}",
+            safe_divide(F.col(f"airplane_total_delay_minutes{suf}"), F.col("distance_feature_km")),
+        )
+    return df
+
+
+# -----------------------------------------------------------------------------
+# 5.4 — Flight-level: composite key (AIRLINE, FLIGHT_NUMBER, NGAY_DL, SCHEDULED_DEPARTURE)
+# Dùng DEPARTURE_DELAY của CHÍNH chuyến đang xét -- hợp lệ theo Phương án A
+# đã chốt.
+#
+# CẬP NHẬT: tham số airline_avg_window chỉ định RÕ dùng cửa sổ lookback nào
+# của Airline-level (vì giờ Airline-level có nhiều cửa sổ, phải chọn 1 cụ
+# thể để so sánh, không còn tên cột cố định duy nhất như trước).
+# -----------------------------------------------------------------------------
+def build_flight_level_features(df, airline_avg_window=7):
+    df = df.withColumn(
+        "flight_departure_delay_per_km",
+        safe_divide(F.col("DEPARTURE_DELAY"), F.col("distance_feature_km")),
+    )
+    suf = _window_suffix(airline_avg_window)
+    total_col, count_col = f"airline_total_delay_minutes{suf}", f"airline_flights_count{suf}"
+    if total_col in df.columns and count_col in df.columns:
+        avg_airline_delay = safe_divide(F.col(total_col), F.col(count_col))
+        df = df.withColumn(
+            f"flight_departure_delay_vs_airline_avg_rt{suf}",
+            safe_divide(F.col("DEPARTURE_DELAY"), avg_airline_delay),
+        )
+    return df
+
+
+# -----------------------------------------------------------------------------
+# 5.5 — Temporal-level: không cần composite key/entity, chỉ dùng ngày/giờ
+# -----------------------------------------------------------------------------
+def build_temporal_level_features(df, weekend_days=(6, 7)):
+    """
+    weekend_days: giá trị DAY_OF_WEEK coi là cuối tuần. ĐÃ XÁC NHẬN với nhóm:
+    DAY_OF_WEEK dùng encoding ISO 8601 (1=Thứ Hai, ..., 7=Chủ Nhật), nên
+    mặc định (6, 7) = Thứ Bảy/Chủ Nhật là chính xác.
+    """
+    df = df.withColumn("is_weekend", F.col("DAY_OF_WEEK").isin(list(weekend_days)).cast("int"))
+    df = df.withColumn(
+        "time_of_day_bucket",
+        F.when(F.col("scheduled_hour").between(5, 11), F.lit("morning"))
+        .when(F.col("scheduled_hour").between(12, 16), F.lit("afternoon"))
+        .when(F.col("scheduled_hour").between(17, 20), F.lit("evening"))
+        .otherwise(F.lit("night")),
+    )
+    return df
