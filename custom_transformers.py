@@ -202,8 +202,8 @@ if __name__ == "__main__":
 
     spark = SparkSession.builder.appName("custom_transformers_sanity_check").getOrCreate()
 
-    flights = spark.read.parquet("data/typed-parquet/flights")
-    airports = spark.read.parquet("data/typed-parquet/airports")
+    flights = spark.read.parquet("data/parquet/flights")
+    airports = spark.read.parquet("data/parquet/airports")
 
     eligible = flights.filter(
         (F.col("ARRIVAL_DELAY").isNotNull())
@@ -451,8 +451,8 @@ class OutlierIQRTruncatorModel(
 # Sanity check cho Section 2
 # -----------------------------------------------------------------------------
 def _section2_sanity_check(spark):
-    flights = spark.read.parquet("data/typed-parquet/flights")
-    airports = spark.read.parquet("data/typed-parquet/airports")
+    flights = spark.read.parquet("data/parquet/flights")
+    airports = spark.read.parquet("data/parquet/airports")
 
     eligible = flights.filter(
         (F.col("ARRIVAL_DELAY").isNotNull())
@@ -864,6 +864,17 @@ def add_flight_timestamp_column(
     return df.withColumn(f"_{output_col}_epoch", F.col(output_col).cast("long"))
 
 
+def _hhmm_to_minutes(col):
+    """Quy đổi cột dạng HHMM (string) sang số phút tính từ 0h -- dùng cho
+    các phép tính số học cần cả 2 vế cùng đơn vị (VD Flight-level, hoặc so
+    sánh với ARRIVAL_DELAY tính bằng phút). Xử lý convention '2400' -> 0."""
+    padded = F.lpad(col, 4, "0")
+    hour = F.substring(padded, 1, 2).cast("int")
+    minute = F.substring(padded, 3, 2).cast("int")
+    hour = F.when(hour == 24, F.lit(0)).otherwise(hour)
+    return hour * 60 + minute
+
+
 def derive_lookback_agg(
     df,
     partition_cols: list,
@@ -971,22 +982,39 @@ def build_airline_level_features(df, lookback_windows=(1, 3, 7), late_threshold=
 # -----------------------------------------------------------------------------
 # 5.2 — Airport-level: composite key (ORIGIN_AIRPORT, NGAY_DL, SCHEDULED_DEPARTURE)
 # Có 2 loại: (a) schedule-based (an toàn dùng cả ngày, không cần multi-window
-# vì luôn là "trong ngày"), (b) lookback (delay lịch sử, hỗ trợ multi-window).
+# vì luôn là "trong ngày"), (b) lookback (delay lịch sử).
+#
+# CẬP NHẬT: kỳ phái sinh đổi sang GIỜ thay vì ngày (theo yêu cầu modeling
+# team) -- disruption ở cấp sân bay (thời tiết, ATC) thường là hiện tượng
+# ngắn hạn trong vài giờ, không cần nhìn xa như cấp Airline/Airplane.
 # -----------------------------------------------------------------------------
-def build_airport_level_features(df, lookback_windows=(1, 3, 7), late_threshold=LATE_ARRIVAL_THRESHOLD_MINUTES):
+def _window_suffix_hours(hours) -> str:
+    """VD 3 -> '_lag3h', 12 -> '_lag12h'"""
+    n = int(hours) if float(hours).is_integer() else hours
+    return f"_lag{n}h"
+
+
+def build_airport_level_features(df, lookback_windows_hours=(3, 6, 12), late_threshold=LATE_ARRIVAL_THRESHOLD_MINUTES):
+    """
+    lookback_windows_hours : tuple các cửa sổ look-back tính bằng GIỜ (mặc
+                              định 3/6/12h). Quy đổi sang lookback_days =
+                              hours/24 khi gọi derive_lookback_agg (hàm nền
+                              tảng vẫn tính theo ngày, chỉ khác đơn vị input).
+    """
     # (a) Schedule-based -- an toàn dùng cả ngày vì là lịch bay, không phải outcome
     df = derive_schedule_count(df, ["ORIGIN_AIRPORT", "YEAR", "MONTH", "DAY"], "airport_scheduled_departures_same_day")
     df = derive_schedule_count(df, ["DESTINATION_AIRPORT", "YEAR", "MONTH", "DAY"], "airport_scheduled_arrivals_same_day")
 
-    # (b) Lookback -- lịch sử delay tại sân bay, PHẢI cắt theo timestamp
-    for w in lookback_windows:
-        suf = _window_suffix(w)
+    # (b) Lookback -- lịch sử delay tại sân bay, PHẢI cắt theo timestamp, kỳ tính bằng giờ
+    for h in lookback_windows_hours:
+        suf = _window_suffix_hours(h)
+        lookback_days = h / 24.0
         df = derive_lookback_agg(
-            df, ["ORIGIN_AIRPORT"], f"airport_late_flights_count{suf}", w,
+            df, ["ORIGIN_AIRPORT"], f"airport_late_flights_count{suf}", lookback_days,
             agg_fn=lambda c: F.sum(F.when(c > late_threshold, 1).otherwise(0)), target_col="ARRIVAL_DELAY",
         )
         df = derive_lookback_agg(
-            df, ["ORIGIN_AIRPORT"], f"airport_avg_delay{suf}", w,
+            df, ["ORIGIN_AIRPORT"], f"airport_avg_delay{suf}", lookback_days,
             agg_fn=F.avg, target_col="ARRIVAL_DELAY",
         )
     return df
@@ -1001,7 +1029,7 @@ def build_airplane_level_features(df, lookback_windows=(1, 3, 7)):
     # KHÔNG cần multi-window vì luôn là "trong ngày hiện tại".
     df = derive_schedule_count(df, ["TAIL_NUMBER", "YEAR", "MONTH", "DAY"], "airplane_flights_scheduled_same_day")
 
-    # Lookback -- lịch sử delay của chính máy bay đó, hỗ trợ multi-window
+    # Lookback (aggregate nhiều chuyến) -- lịch sử delay của chính máy bay đó
     for w in lookback_windows:
         suf = _window_suffix(w)
         df = derive_lookback_agg(
@@ -1012,6 +1040,30 @@ def build_airplane_level_features(df, lookback_windows=(1, 3, 7)):
             f"airplane_delay_per_km{suf}",
             safe_divide(F.col(f"airplane_total_delay_minutes{suf}"), F.col("distance_feature_km")),
         )
+
+    # -------------------------------------------------------------------
+    # MỚI (theo yêu cầu modeling team): CHỈ 1 chuyến liền trước (không phải
+    # aggregate nhiều chuyến như ở trên) -- dùng F.lag(1), không phải
+    # rangeBetween. Vẫn leak-safe: lag(1) theo timestamp thực chỉ lấy đúng
+    # 1 dòng NGAY TRƯỚC, không bao giờ nhìn thấy dòng hiện tại hay tương lai.
+    # -------------------------------------------------------------------
+    prev_flight_window = Window.partitionBy("TAIL_NUMBER").orderBy("_flight_timestamp_epoch")
+    df = df.withColumn(
+        "airplane_prev_flight_arrival_delay",
+        F.lag(F.col("ARRIVAL_DELAY"), 1).over(prev_flight_window),
+    )
+
+    # ⚠️ LƯU Ý ĐƠN VỊ: ARRIVAL_DELAY (phút, khoảng thời gian trễ) trừ cho
+    # SCHEDULED_ARRIVAL (quy đổi số phút từ 0h, mốc giờ trong ngày) -- 2 đại
+    # lượng khác bản chất (duration vs. time-of-day). Implement ĐÚNG theo
+    # yêu cầu modeling team; CẦN XÁC NHẬN lại ý nghĩa nghiệp vụ trước khi
+    # đưa vào training chính thức.
+    current_scheduled_arrival_minutes = _hhmm_to_minutes(F.col("SCHEDULED_ARRIVAL"))
+    df = df.withColumn(
+        "airplane_prev_flight_delay_vs_current_schedule",
+        F.col("airplane_prev_flight_arrival_delay") - current_scheduled_arrival_minutes,
+    )
+
     return df
 
 
@@ -1037,6 +1089,36 @@ def build_flight_level_features(df, airline_avg_window=7):
             f"flight_departure_delay_vs_airline_avg_rt{suf}",
             safe_divide(F.col("DEPARTURE_DELAY"), avg_airline_delay),
         )
+
+    # -------------------------------------------------------------------
+    # MỚI (theo yêu cầu modeling team): thông tin MẶC ĐỊNH của chính chuyến
+    # đang xét -- KHÔNG áp dụng kỳ phái sinh (không phải lookback/lag), vì
+    # đây là đặc điểm cố định của bản thân chuyến bay, biết ngay tại thời
+    # điểm dự đoán.
+    # -------------------------------------------------------------------
+    dep_minutes = _hhmm_to_minutes(F.col("SCHEDULED_DEPARTURE"))
+    arr_minutes = _hhmm_to_minutes(F.col("SCHEDULED_ARRIVAL"))
+    raw_diff = arr_minutes - dep_minutes
+    # Chuyến qua đêm (giờ đến "nhỏ hơn" giờ đi theo đồng hồ) -> cộng thêm 1 ngày
+    computed_duration = F.when(raw_diff < 0, raw_diff + 1440).otherwise(raw_diff)
+    df = df.withColumn("flight_computed_scheduled_duration_minutes", computed_duration)
+
+    # ⚠️ LƯU Ý QUAN TRỌNG: đây là hiệu số giờ đồng hồ ĐỊA PHƯƠNG tại 2 sân
+    # bay (SCHEDULED_ARRIVAL/SCHEDULED_DEPARTURE), KHÔNG phải elapsed time
+    # thực. Với chuyến bay XUYÊN MÚI GIỜ (VD LAX -> JFK), hiệu số này SẼ
+    # KHÁC với thời lượng bay thực tế (cột SCHEDULED_TIME gốc trong dataset
+    # đã tính đúng elapsed time, không bị lệch múi giờ). Cân nhắc dùng
+    # SCHEDULED_TIME gốc thay vì cột này nếu cần độ chính xác elapsed time
+    # thực; giữ cột này lại vì được yêu cầu tường minh, có thể hữu ích như
+    # 1 proxy khác (chênh lệch múi giờ giữa 2 sân bay) chứ không phải elapsed
+    # time đúng nghĩa.
+
+    # "so km di": da co san tu Section 1 (distance_feature_km), khong tao lai.
+    df = df.withColumn(
+        "flight_scheduled_minutes_per_km",
+        safe_divide(F.col("flight_computed_scheduled_duration_minutes"), F.col("distance_feature_km")),
+    )
+
     return df
 
 
