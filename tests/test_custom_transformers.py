@@ -606,10 +606,11 @@ def test_airplane_level_schedule_count_same_day(spark):
 
     df = spark.createDataFrame(
         [
-            ("N100", 2015, 1, 1, "0800", 5.0, 100.0),
-            ("N100", 2015, 1, 1, "1400", 0.0, 200.0),
+            ("N100", 2015, 1, 1, "0800", "1000", 5.0, 100.0),
+            ("N100", 2015, 1, 1, "1400", "1600", 0.0, 200.0),
         ],
-        ["TAIL_NUMBER", "YEAR", "MONTH", "DAY", "SCHEDULED_DEPARTURE", "ARRIVAL_DELAY", "distance_feature_km"],
+        ["TAIL_NUMBER", "YEAR", "MONTH", "DAY", "SCHEDULED_DEPARTURE", "SCHEDULED_ARRIVAL",
+         "ARRIVAL_DELAY", "distance_feature_km"],
     )
     df = add_flight_timestamp_column(df)
     result = build_airplane_level_features(df, lookback_windows=(7,)).collect()
@@ -630,3 +631,118 @@ def test_temporal_level_weekend_and_time_bucket(spark):
     assert by_hour[14] == (1, "afternoon")
     assert by_hour[19] == (0, "evening")
     assert by_hour[2] == (0, "night")
+
+
+# =============================================================================
+# SECTION 5 (BỔ SUNG) — prev-flight (Airplane), hour-window (Airport),
+# default flight info (Flight-level, không kỳ phái sinh)
+# =============================================================================
+
+
+def test_airplane_prev_flight_arrival_delay_uses_only_immediate_previous(spark):
+    from custom_transformers import add_flight_timestamp_column, build_airplane_level_features
+
+    df = spark.createDataFrame(
+        [
+            ("N100", 2015, 1, 1, "0800", "1000", 5.0, 100.0),
+            ("N100", 2015, 1, 1, "1400", "1600", 40.0, 100.0),
+            ("N100", 2015, 1, 2, "0800", "1000", 0.0, 100.0),
+        ],
+        ["TAIL_NUMBER", "YEAR", "MONTH", "DAY", "SCHEDULED_DEPARTURE", "SCHEDULED_ARRIVAL",
+         "ARRIVAL_DELAY", "distance_feature_km"],
+    )
+    df = add_flight_timestamp_column(df)
+    result = (
+        build_airplane_level_features(df, lookback_windows=(7,))
+        .orderBy("_flight_timestamp_epoch")
+        .collect()
+    )
+
+    # Chuyến đầu tiên: không có chuyến nào trước -> NULL
+    assert result[0]["airplane_prev_flight_arrival_delay"] is None
+    # Chuyến thứ 2 (14h ngày 1): chuyến liền trước là 8h ngày 1 (delay=5.0)
+    assert result[1]["airplane_prev_flight_arrival_delay"] == pytest.approx(5.0)
+    # Chuyến thứ 3 (ngày 2): chuyến liền trước là 14h ngày 1 (delay=40.0),
+    # KHÔNG phải trung bình/tổng nhiều chuyến -- chỉ đúng 1 chuyến ngay trước
+    assert result[2]["airplane_prev_flight_arrival_delay"] == pytest.approx(40.0)
+
+
+def test_airplane_prev_flight_delay_vs_current_schedule_computation(spark):
+    from custom_transformers import add_flight_timestamp_column, build_airplane_level_features
+
+    df = spark.createDataFrame(
+        [
+            ("N100", 2015, 1, 1, "0800", "1000", 30.0, 100.0),   # chuyến 1: delay=30
+            ("N100", 2015, 1, 1, "1400", "1630", 0.0, 100.0),    # chuyến 2: SCHEDULED_ARRIVAL=16:30 -> 990 phut
+        ],
+        ["TAIL_NUMBER", "YEAR", "MONTH", "DAY", "SCHEDULED_DEPARTURE", "SCHEDULED_ARRIVAL",
+         "ARRIVAL_DELAY", "distance_feature_km"],
+    )
+    df = add_flight_timestamp_column(df)
+    result = (
+        build_airplane_level_features(df, lookback_windows=(7,))
+        .orderBy("_flight_timestamp_epoch")
+        .collect()
+    )
+    # Chuyến 2: prev_flight_arrival_delay=30.0, SCHEDULED_ARRIVAL="1630" -> 16*60+30=990 phut
+    # 30.0 - 990 = -960.0
+    assert result[1]["airplane_prev_flight_delay_vs_current_schedule"] == pytest.approx(30.0 - 990)
+
+
+def test_airport_level_hour_based_window_naming_and_causality(spark):
+    from custom_transformers import add_flight_timestamp_column, build_airport_level_features
+
+    df = spark.createDataFrame(
+        [
+            ("JFK", "LAX", 2015, 1, 1, "0800", 50.0),  # 8h sang, delay lon
+            ("JFK", "LAX", 2015, 1, 1, "1100", 0.0),   # 11h sang, cach chuyen truoc 3 gio
+            ("JFK", "LAX", 2015, 1, 1, "2000", 0.0),   # 20h toi, cach xa hon 6h
+        ],
+        ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT", "YEAR", "MONTH", "DAY", "SCHEDULED_DEPARTURE", "ARRIVAL_DELAY"],
+    )
+    df = add_flight_timestamp_column(df)
+    result = (
+        build_airport_level_features(df, lookback_windows_hours=(3, 6))
+        .orderBy("_flight_timestamp_epoch")
+        .collect()
+    )
+
+    # Cột phải có suffix "_lag3h"/"_lag6h", KHÔNG phải "_lagXd"
+    assert "airport_avg_delay_lag3h" in result[0].asDict()
+    assert "airport_avg_delay_lag6h" in result[0].asDict()
+
+    # Chuyến 11h: cách chuyến 8h đúng 3 giờ -> cửa sổ 3h vẫn thấy được (biên bao gồm)
+    row_11h = result[1]
+    assert row_11h["airport_avg_delay_lag3h"] == pytest.approx(50.0)
+
+    # Chuyến 20h: cách chuyến 8h tới 12 giờ -> cửa sổ 6h KHÔNG thấy được chuyến 8h nữa
+    row_20h = result[2]
+    assert row_20h["airport_avg_delay_lag6h"] is None
+
+
+def test_flight_level_default_info_no_period_applied(spark):
+    from custom_transformers import build_flight_level_features
+
+    df = spark.createDataFrame(
+        [("0800", "1030", 750.0)],  # 08:00 -> 10:30 = 150 phut, distance=750km
+        ["SCHEDULED_DEPARTURE", "SCHEDULED_ARRIVAL", "distance_feature_km"],
+    )
+    # Không cần add_flight_timestamp_column vì đây là feature KHÔNG áp dụng kỳ phái sinh
+    df = df.withColumn("DEPARTURE_DELAY", F.lit(None).cast("double"))
+    result = build_flight_level_features(df).collect()[0]
+
+    assert result["flight_computed_scheduled_duration_minutes"] == 150
+    assert result["flight_scheduled_minutes_per_km"] == pytest.approx(150 / 750)
+
+
+def test_flight_level_default_info_handles_overnight(spark):
+    from custom_transformers import build_flight_level_features
+
+    df = spark.createDataFrame(
+        [("2330", "0130", 500.0)],  # 23:30 -> 01:30 (qua đêm) = 120 phút
+        ["SCHEDULED_DEPARTURE", "SCHEDULED_ARRIVAL", "distance_feature_km"],
+    )
+    df = df.withColumn("DEPARTURE_DELAY", F.lit(None).cast("double"))
+    result = build_flight_level_features(df).collect()[0]
+
+    assert result["flight_computed_scheduled_duration_minutes"] == 120
