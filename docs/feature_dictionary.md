@@ -5,7 +5,7 @@
 > trước khi taxi-out hoàn tất (theo giải thích của Huy: "khởi hành" = bắt
 > đầu taxi-out). `DEPARTURE_DELAY` **hợp lệ** làm feature. Ranh giới
 > leakage nằm ngay sau `DEPARTURE_DELAY`, trước `TAXI_OUT`.
->
+
 ---
 
 ## 1. Phương hướng xây dựng feature
@@ -39,6 +39,32 @@ thay vì rời rạc như thiết kế ban đầu:
 `{t-2,t-1,t}`; kỳ 7 ngày = `{t-6,...,t}`. Về code, thỏa mãn tự nhiên bằng
 cách cắt cửa sổ theo epoch-seconds với `rangeBetween(-lookback_seconds, -1)`
 — không cần xử lý "bao gồm ngày t" như 1 case riêng.
+
+### 1.1 Chiến lược chia train/test — ĐÃ ĐỔI sang time-based split
+
+`05_build_modeling_dataset.py` (file local, không push git) hiện chia
+train/test theo **thời gian**, không phải random 80/20 như bản trước:
+
+- Tính `split_date` = percentile 80% của `flight_timestamp` trên toàn bộ base.
+- **Train** = mọi chuyến có `flight_timestamp < split_date` (80% thời gian đầu).
+- **Test** = mọi chuyến có `flight_timestamp >= split_date` (20% thời gian cuối).
+
+**Lý do đổi:** dù về mặt leak-safety, feature LOOKBACK đã được tính đúng
+theo timestamp thật *trước khi* split (nên random split hay time split đều
+không gây leakage kỹ thuật) — nhưng **time-based split đánh giá thực tế
+hơn** cho bài toán có yếu tố thời gian: random split có thể vô tình đặt 1
+chuyến tháng 1 vào test trong khi các chuyến tháng 1 tương tự (cùng
+disruption, cùng điều kiện thời tiết) nằm ở train → model "nhìn thấy" ngữ
+cảnh gần giống qua tập train, khiến test performance lạc quan giả tạo.
+Time-based split (train = quá khứ, test = tương lai) mô phỏng đúng tình
+huống production: dự đoán chuyến bay CHƯA XẢY RA dựa trên lịch sử đã biết.
+
+⚠️ **Hệ quả cần lưu ý:** vì `AIRLINE`/`ORIGIN_AIRPORT` không phân bố đều
+theo thời gian, tỷ lệ train/test thực tế theo SỐ DÒNG có thể lệch khỏi đúng
+80/20 (script in ra `Train ratio`/`Test ratio` thực tế để kiểm tra) — khác
+với random split luôn đảm bảo đúng tỷ lệ theo dòng.
+
+
 ---
 
 ## 2. Bảng trường gốc (raw fields)
@@ -123,12 +149,16 @@ cách cắt cửa sổ theo epoch-seconds với `rangeBetween(-lookback_seconds,
 
 ### 7.2 Airport-level (`build_airport_level_features`)
 
+> **CẬP NHẬT**: kỳ phái sinh đổi sang **GIỜ** (mặc định `lookback_windows_hours=(3,6,12)`)
+> thay vì ngày — disruption sân bay (thời tiết, ATC) là hiện tượng ngắn hạn.
+> Suffix đổi từ `_lag{n}d` sang `_lag{n}h`.
+
 | Tên biến | Ý nghĩa | Cách xử lý | Dùng model? | Lý do |
 |---|---|---|---|---|
 | `airport_scheduled_departures_same_day` | Số chuyến đi từ sân bay trong ngày | `derive_schedule_count` — **an toàn dùng cả ngày** (lịch bay), KHÔNG cần multi-window | ✅ Yes | Schedule-based, không phải outcome |
 | `airport_scheduled_arrivals_same_day` | Số chuyến đến sân bay trong ngày | `derive_schedule_count` theo `DESTINATION_AIRPORT` | ✅ Yes | — |
-| `airport_late_flights_count_lag{1,3,7}d` | Số chuyến trễ (`ARRIVAL_DELAY>30`) tại sân bay | `derive_lookback_agg`, cắt theo timestamp | ✅ Yes | Ngưỡng đã chốt = 30 |
-| `airport_avg_delay_lag{1,3,7}d` | Trung bình phút trễ tại sân bay (lookback) | `derive_lookback_agg`, AVG | ✅ Yes | — |
+| `airport_late_flights_count_lag{3,6,12}h` | Số chuyến trễ (`ARRIVAL_DELAY>30`) tại sân bay | `derive_lookback_agg`, cắt theo timestamp, cửa sổ tính bằng giờ | ✅ Yes | Ngưỡng đã chốt = 30 |
+| `airport_avg_delay_lag{3,6,12}h` | Trung bình phút trễ tại sân bay (lookback) | `derive_lookback_agg`, AVG, cửa sổ tính bằng giờ | ✅ Yes | — |
 
 ### 7.3 Airplane-level (`build_airplane_level_features`)
 
@@ -137,20 +167,19 @@ cách cắt cửa sổ theo epoch-seconds với `rangeBetween(-lookback_seconds,
 | `airplane_flights_scheduled_same_day` | Số chuyến máy bay phải bay trong ngày | `derive_schedule_count` — an toàn dùng cả ngày, KHÔNG cần multi-window | ✅ Yes | Schedule-based |
 | `airplane_total_delay_minutes_lag{1,3,7}d` | Tổng phút trễ lịch sử của chính máy bay | `derive_lookback_agg`, SUM, cắt theo timestamp | ✅ Yes | Dùng `ARRIVAL_DELAY` lịch sử |
 | `airplane_delay_per_km_lag{1,3,7}d` | Phút trễ lịch sử / km chuyến hiện tại | `safe_divide(total_delay_lag, distance_feature_km)` | ✅ Yes | — |
+| **`airplane_prev_flight_arrival_delay`** *(mới)* | `ARRIVAL_DELAY` của **đúng 1 chuyến liền trước** (không phải aggregate nhiều chuyến) của cùng máy bay | `F.lag(ARRIVAL_DELAY, 1)` theo `Window.partitionBy(TAIL_NUMBER).orderBy(timestamp)` | ✅ Yes | Tín hiệu "vấn đề tức thời" của máy bay, khác nhóm `_lag{n}d` (tổng hợp nhiều chuyến) |
+| **`airplane_prev_flight_delay_vs_current_schedule`** *(mới)* | `airplane_prev_flight_arrival_delay` trừ `SCHEDULED_ARRIVAL` (quy đổi phút) của chuyến hiện tại | `airplane_prev_flight_arrival_delay - _hhmm_to_minutes(SCHEDULED_ARRIVAL)` | ⚠️ **Cần xác nhận** | ⚠️ **2 đại lượng khác bản chất** (duration vs. time-of-day) — implement đúng theo yêu cầu, nhưng ý nghĩa nghiệp vụ cần xác nhận lại trước khi dùng chính thức trong training |
 
 ### 7.4 Flight-level (`build_flight_level_features`)
 
 | Tên biến | Ý nghĩa | Cách xử lý | Dùng model? | Lý do |
 |---|---|---|---|---|
 | `flight_departure_delay_per_km` | `DEPARTURE_DELAY` của chính chuyến / km | `safe_divide(DEPARTURE_DELAY, distance_feature_km)` | ✅ **Yes** | Hợp lệ theo Phương án A đã chốt |
-| `flight_departure_delay_vs_airline_avg_rt7d` | Tỷ lệ delay chuyến này / delay TB 7 ngày gần đây của hãng | `safe_divide(DEPARTURE_DELAY, avg_airline_delay_lag7d)`, dùng rule chia đặc biệt; tham số `airline_avg_window` chọn cửa sổ so sánh (mặc định 7 ngày) | ✅ **Yes** | Hợp lệ theo Phương án A đã chốt. ⚠️ Cả tử và mẫu đều có thể âm — xem lưu ý bên dưới |
+| `flight_departure_delay_vs_airline_avg_rt7d` | Tỷ lệ delay chuyến này / delay TB 7 ngày gần đây của hãng | `safe_divide(DEPARTURE_DELAY, avg_airline_delay_lag7d)`, dùng rule chia đặc biệt; tham số `airline_avg_window` chọn cửa sổ so sánh (mặc định 7 ngày) |  **Yes** | Hợp lệ theo Phương án A đã chốt.  Cả tử và mẫu đều có thể âm — xem lưu ý bên dưới |
+| **`flight_computed_scheduled_duration_minutes`** *(mới)* | `SCHEDULED_ARRIVAL - SCHEDULED_DEPARTURE`, tính bằng phút | `_hhmm_to_minutes(SCHEDULED_ARRIVAL) - _hhmm_to_minutes(SCHEDULED_DEPARTURE)`, xử lý qua đêm (+1440 nếu âm) | ⚠️ **Cân nhắc** | **KHÔNG áp dụng kỳ phái sinh** (thông tin mặc định của chuyến).  Hiệu giờ đồng hồ ĐỊA PHƯƠNG — với chuyến xuyên múi giờ sẽ KHÁC elapsed time thực (cột `SCHEDULED_TIME` gốc đã tính đúng, không lệch múi giờ) |
+| *(không tạo cột mới)* Số km đi | `distance_feature_km` đã có sẵn từ Section 1 | — | ✅ Yes | Không cần derive lại |
+| **`flight_scheduled_minutes_per_km`** *(mới)* | Số phút bay theo lịch / km — proxy tốc độ bay theo lịch | `safe_divide(flight_computed_scheduled_duration_minutes, distance_feature_km)` |  **Cân nhắc** | **KHÔNG áp dụng kỳ phái sinh**; phụ thuộc độ tin cậy của `flight_computed_scheduled_duration_minutes` ở trên |
 
-⚠️ **Lưu ý về `flight_departure_delay_vs_airline_avg_rt7d`:** đây là tỷ lệ
-giữa 2 đại lượng đều có thể âm (chuyến đến sớm/hãng đang bay sớm trung
-bình) — khi mẫu số đổi dấu, ý nghĩa "tốt/xấu hơn xu hướng" của tỷ lệ bị đảo
-ngược phi trực giác. **Chưa sửa trong bản này** — cân nhắc đổi sang hiệu số
-(`DEPARTURE_DELAY - avg_airline_delay_lag7d`) thay vì tỷ lệ để tránh bệnh lý
-đổi dấu.
 
 ### 7.5 Temporal-level (`build_temporal_level_features`)
 
@@ -182,23 +211,9 @@ Circle Mapper), patch trong `MANUAL_AIRPORT_COORDS` (`custom_transformers.py`).
 
 ---
 
-## 9. Việc còn treo
-
-| # | Việc | Trạng thái |
-|---|---|---|
-| 1 | Báo Bích cập nhật `data_dictionary.md` gốc theo Phương án A | ⏳ Chưa làm |
-| 2 | `FLIGHT_NUMBER` — chưa đánh giá kỹ có nên giữ/encode thế nào | ⏳ Chưa làm |
-| 3 | Sửa `route_congestion_count` thiếu `YEAR` trong group key | ⏳ Chưa làm |
-| 4 | `flight_departure_delay_vs_airline_avg_rt7d` — tỷ lệ 2 số có thể âm, cân nhắc đổi sang hiệu số | ⏳ Chưa làm |
-| 5 | Ngưỡng "late" = `ARRIVAL_DELAY > 30` | ✅ Đã chốt |
-| 6 | Hỗ trợ nhiều cửa sổ lookback (1/3/7 ngày) cùng lúc | ✅ Đã sửa |
-
----
-
-## 10. File liên quan
+## 9. File liên quan
 
 | File | Vai trò |
 |---|---|
 | `custom_transformers.py` | Toàn bộ 5 Section: Haversine, Outlier+flag, TargetEncoder (không dùng training), feature cơ bản, 5 cấp độ |
 | `tests/test_custom_transformers.py` | 30 test case, cover cả 5 Section |
-| `feature_catalog_scenario_A.xlsx` | Bảng Excel chi tiết (2 sheet: Feature Catalog + Rule Phái Sinh), đồng bộ nội dung với file này |
