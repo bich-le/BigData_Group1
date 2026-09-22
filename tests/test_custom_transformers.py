@@ -9,7 +9,7 @@ rõ ràng, để CI/kiểm thử tự động phát hiện lỗi khi code thay �
 Chạy: pytest tests/test_custom_transformers.py -v
 """
 
-import math
+import os
 import sys
 
 import pytest
@@ -22,26 +22,152 @@ from custom_transformers import (
     TargetEncoder,
     TargetEncoderModel,
     add_haversine_distance_feature,
+    build_airport_code_mapping,
     haversine_km,
     patch_missing_airport_coordinates,
 )
 
 
-@pytest.fixture(scope="module")
+# -----------------------------------------------------------------------------
+# MỘT SparkSession duy nhất cho cả file (scope="session").
+# Trước đây fixture `spark` bị định nghĩa HAI LẦN trong file này -> định nghĩa
+# sau ghi đè định nghĩa trước, và mỗi lần chạy lại tạo/stop session, rất dễ
+# làm chết SparkContext giữa chừng (triệu chứng: test đầu pass, toàn bộ test
+# sau fail hàng loạt). Kèm theo đó là cấu hình mặc định
+# spark.sql.shuffle.partitions=200 -- với dữ liệu test vài dòng thì đây là
+# nguyên nhân chính khiến suite chạy tới vài phút.
+# -----------------------------------------------------------------------------
+@pytest.fixture(scope="session")
 def spark():
-    import os
-
     os.environ["PYSPARK_PYTHON"] = sys.executable
     os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
-    spark = (
+    session = (
         SparkSession.builder.master("local[2]")
         .appName("test_custom_transformers")
         .config("spark.pyspark.python", sys.executable)
         .config("spark.pyspark.driver.python", sys.executable)
+        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.default.parallelism", "2")
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.ui.enabled", "false")
+        .config("spark.driver.memory", "1g")
         .getOrCreate()
     )
-    yield spark
-    spark.stop()
+    session.sparkContext.setLogLevel("ERROR")
+    yield session
+    session.stop()
+
+
+# =============================================================================
+# SECTION 0 — DOT -> IATA airport mapping
+# =============================================================================
+
+
+def make_airports(spark):
+    return spark.createDataFrame([
+        ("ATL", "Hartsfield Airport", "Atlanta", "GA", 33.6407, -84.4277),
+        ("XYZ", "Test Airport", "Testville", "TX", 30.0, -97.0),
+        ("AUS", "Austin Airport", "Austin", "TX", 30.1975, -97.6664),
+        ("SMF", "Sacramento International", "Sacramento", "CA", 38.6951, -121.5908),
+        ("CVG", "Cincinnati/Northern Kentucky International", "Cincinnati", "KY", 39.0488, -84.6678),
+    ], ["IATA_CODE", "AIRPORT", "CITY", "STATE", "LATITUDE", "LONGITUDE"])
+
+
+def make_ref(spark):
+    return spark.createDataFrame([
+        ("10001", "Atlanta, GA: Hartsfield Airport"),   # Level 1
+        ("10002", "Austin, TX: Something Else"),        # Level 2
+        ("10003", "Mystery, CA: Sacramento International"), # Level 3
+    ], ["Code", "Description"])
+
+
+def make_id(spark):
+    return spark.createDataFrame([
+        ("10001", "Atlanta, GA: Hartsfield Airport"),
+        ("10002", "Austin, TX: Something Else"),
+        ("10003", "Mystery, CA: Sacramento International"),
+        ("11193", "Cincinnati, OH: Manual fallback"),
+    ], ["Code", "Description"])
+
+
+def test_mapping_direct_iata_is_preserved(spark):
+    flights = spark.createDataFrame([("ATL", "XYZ")], ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT"])
+    m = build_airport_code_mapping(flights, make_airports(spark), make_ref(spark), make_id(spark), manual_mapping={})
+    rows = {r["AIRPORT_CODE"]: r["IATA_CODE"] for r in m.collect()}
+    assert rows["ATL"] == "ATL"
+    assert rows["XYZ"] == "XYZ"
+
+
+def test_mapping_level_1_uses_state_city_and_airport(spark):
+    flights = spark.createDataFrame([("10001", "ATL")], ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT"])
+    m = build_airport_code_mapping(flights, make_airports(spark), make_ref(spark), make_id(spark), manual_mapping={})
+    rows = {r["AIRPORT_CODE"]: r["IATA_CODE"] for r in m.collect()}
+    assert rows["10001"] == "ATL"
+
+
+def test_mapping_level_2_uses_state_and_city(spark):
+    flights = spark.createDataFrame([("10002", "ATL")], ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT"])
+    m = build_airport_code_mapping(flights, make_airports(spark), make_ref(spark), make_id(spark), manual_mapping={})
+    rows = {r["AIRPORT_CODE"]: r["IATA_CODE"] for r in m.collect()}
+    assert rows["10002"] == "AUS"
+
+
+def test_mapping_level_3_uses_state_and_airport_name(spark):
+    flights = spark.createDataFrame([("10003", "ATL")], ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT"])
+    m = build_airport_code_mapping(flights, make_airports(spark), make_ref(spark), make_id(spark), manual_mapping={})
+    rows = {r["AIRPORT_CODE"]: r["IATA_CODE"] for r in m.collect()}
+    assert rows["10003"] == "SMF"
+
+
+def test_mapping_manual_fallback_is_used(spark):
+    flights = spark.createDataFrame([("11193", "ATL")], ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT"])
+    m = build_airport_code_mapping(
+        flights, make_airports(spark), make_ref(spark), make_id(spark),
+        manual_mapping={"11193": "CVG"},
+    )
+    rows = {r["AIRPORT_CODE"]: r["IATA_CODE"] for r in m.collect()}
+    assert rows["11193"] == "CVG"
+
+
+def test_mapping_has_one_row_per_airport_code(spark):
+    flights = spark.createDataFrame(
+        [("ATL", "10001"), ("10002", "11193"), ("10003", "ATL")],
+        ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT"],
+    )
+    m = build_airport_code_mapping(
+        flights, make_airports(spark), make_ref(spark), make_id(spark),
+        manual_mapping={"11193": "CVG"},
+    )
+    assert m.groupBy("AIRPORT_CODE").count().filter(F.col("count") > 1).count() == 0
+
+
+def test_haversine_uses_mapping_for_numeric_dot_code(spark):
+    flights = spark.createDataFrame(
+        [("10001", "ATL", 100.0)],
+        ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT", "DISTANCE"],
+    )
+    airports = make_airports(spark)
+    mapping = build_airport_code_mapping(
+        flights, airports, make_ref(spark), make_id(spark), manual_mapping={}
+    )
+    result = add_haversine_distance_feature(flights, airports, mapping).collect()[0]
+    assert result["has_haversine_distance"] is True
+    assert result["haversine_distance_km"] is not None
+    assert result["distance_feature_km"] == pytest.approx(result["haversine_distance_km"])
+
+
+def test_haversine_still_falls_back_for_unmapped_code(spark):
+    flights = spark.createDataFrame(
+        [("99999", "ATL", 500.0)],
+        ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT", "DISTANCE"],
+    )
+    airports = make_airports(spark)
+    mapping = build_airport_code_mapping(
+        flights, airports, make_ref(spark), make_id(spark), manual_mapping={}
+    )
+    result = add_haversine_distance_feature(flights, airports, mapping).collect()[0]
+    assert result["has_haversine_distance"] is False
+    assert result["distance_feature_km"] == pytest.approx(500.0 * 1.60934)
 
 
 # =============================================================================
@@ -430,15 +556,15 @@ def test_scheduled_hour_handles_unpadded_time(spark):
 def test_route_congestion_counts_correctly(spark):
     from custom_transformers import add_route_congestion_feature
 
-    # 3 chuyến cùng sân bay/ngày/giờ, 1 chuyến khác giờ -> congestion phải phân biệt đúng
+    # 3 chuyến cùng sân bay/năm/ngày/giờ, 1 chuyến khác giờ -> congestion phải phân biệt đúng
     df = spark.createDataFrame(
         [
-            ("JFK", 1, 15, 9),
-            ("JFK", 1, 15, 9),
-            ("JFK", 1, 15, 9),
-            ("JFK", 1, 15, 10),
+            ("JFK", 2015, 1, 15, 9),
+            ("JFK", 2015, 1, 15, 9),
+            ("JFK", 2015, 1, 15, 9),
+            ("JFK", 2015, 1, 15, 10),
         ],
-        ["ORIGIN_AIRPORT", "MONTH", "DAY", "scheduled_hour"],
+        ["ORIGIN_AIRPORT", "YEAR", "MONTH", "DAY", "scheduled_hour"],
     )
     result = add_route_congestion_feature(df).collect()
 
@@ -448,6 +574,50 @@ def test_route_congestion_counts_correctly(spark):
 
     assert congestion_by_hour[9] == 3
     assert congestion_by_hour[10] == 1
+
+
+def test_route_congestion_does_not_collide_across_years(spark):
+    """Kiểm chứng bản vá (feature_dictionary.md, vấn đề còn treo #1): thiếu
+    YEAR trong group key sẽ gộp nhầm cùng MONTH/DAY/scheduled_hour của các
+    năm khác nhau vào 1 nhóm. Sau khi thêm YEAR, 2 chuyến cùng
+    sân bay/tháng/ngày/giờ nhưng KHÁC năm phải được đếm ĐỘC LẬP."""
+    from custom_transformers import add_route_congestion_feature
+
+    df = spark.createDataFrame(
+        [
+            ("JFK", 2015, 1, 15, 9),
+            ("JFK", 2015, 1, 15, 9),
+            ("JFK", 2016, 1, 15, 9),  # cùng MONTH/DAY/hour, KHÁC năm
+        ],
+        ["ORIGIN_AIRPORT", "YEAR", "MONTH", "DAY", "scheduled_hour"],
+    )
+    result = {
+        row["YEAR"]: row["route_congestion_count"]
+        for row in add_route_congestion_feature(df).collect()
+    }
+
+    # Nếu group key thiếu YEAR, cả 3 dòng sẽ gộp thành 1 nhóm -> count = 3 cho cả 2 năm.
+    assert result[2015] == 2
+    assert result[2016] == 1
+
+
+def test_route_congestion_year_col_none_restores_old_behavior(spark):
+    """year_col=None tắt hẳn việc dùng YEAR -- dùng khi chắc chắn dataset chỉ
+    có đúng 1 năm và muốn giữ hành vi cũ (không khuyến khích cho dữ liệu
+    nhiều năm)."""
+    from custom_transformers import add_route_congestion_feature
+
+    df = spark.createDataFrame(
+        [
+            ("JFK", 2015, 1, 15, 9),
+            ("JFK", 2016, 1, 15, 9),
+        ],
+        ["ORIGIN_AIRPORT", "YEAR", "MONTH", "DAY", "scheduled_hour"],
+    )
+    result = add_route_congestion_feature(df, year_col=None).collect()
+
+    # year_col=None -> 2 dòng khác năm nhưng cùng MONTH/DAY/hour bị gộp chung
+    assert all(r["route_congestion_count"] == 2 for r in result)
 
 
 # =============================================================================
