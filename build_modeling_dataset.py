@@ -1,5 +1,5 @@
 """
-05_build_modeling_dataset.py  [LOCAL ONLY — KHÔNG push git, chỉ để test ra
+build_modeling_dataset.py  [LOCAL ONLY — KHÔNG push git, chỉ để test ra
 output trực tiếp trên máy cá nhân]
 
 Đây là file điều phối (orchestration), KHÔNG chứa logic feature engineering
@@ -45,6 +45,7 @@ from custom_transformers import (
     TargetEncoder,
     add_flight_timestamp_column,
     add_haversine_distance_feature,
+    build_airport_code_mapping,
     add_route_congestion_feature,
     add_scheduled_hour_feature,
     build_airline_level_features,
@@ -60,6 +61,11 @@ from custom_transformers import (
 DATA_ROOT = "data/parquet"         
 BASE_PATH = "data/model-ready/base"  
 MODELS_DIR = "models"
+
+# Airport mapping lookup tables used by build_airport_code_mapping().
+# These are lookup inputs only; mapping logic remains in custom_transformers.py.
+AIRPORT_REF_PATH = "data/raw/L_AIRPORT.csv"
+AIRPORT_ID_PATH = "data/raw/L_AIRPORT_ID.csv"
 
 LOOKBACK_WINDOWS_DAYS = (1, 3, 7)         # Airline/Airplane-level
 AIRPORT_LOOKBACK_HOURS = (3, 6, 12)        # Airport-level
@@ -82,15 +88,32 @@ LEAKAGE_COLUMNS = [
 def get_spark():
     return (
         SparkSession.builder.appName("build_modeling_dataset")
-        .master("local[*]")
+        .master("local[2]")
         .config("spark.pyspark.python", python_executable)
         .config("spark.pyspark.driver.python", python_executable)
         .config("spark.driver.memory", "8g")  # điều chỉnh theo RAM máy bạn
         .config("spark.local.dir", r"F:\SparkTemp")
         .config("spark.driver.maxResultSize", "2g")
-        .config("spark.sql.shuffle.partitions", "64")
+        .config("spark.sql.shuffle.partitions", "12")
         .getOrCreate()
     )
+
+
+def read_lookup_table(spark, path):
+    """Read a lookup table used by the airport-code mapping.
+
+    Supports CSV (the notebook/source files) and Parquet without moving any
+    mapping logic into this orchestration script.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Airport mapping lookup file not found: {path}\n"
+            "Make sure L_AIRPORT.csv and L_AIRPORT_ID.csv are available at the configured paths."
+        )
+
+    if path.lower().endswith(".csv"):
+        return spark.read.option("header", True).option("inferSchema", True).csv(path)
+    return spark.read.parquet(path)
 
 
 def checkpoint_and_reload(spark, df, path):
@@ -138,6 +161,8 @@ def main():
     # -------------------------------------------------------------------
     flights = spark.read.parquet(f"{DATA_ROOT}/flights")
     airports = spark.read.parquet(f"{DATA_ROOT}/airports")
+    airport_ref = read_lookup_table(spark, AIRPORT_REF_PATH)
+    airport_id = read_lookup_table(spark, AIRPORT_ID_PATH)
 
     base = flights.filter(
         (F.col("ARRIVAL_DELAY").isNotNull())
@@ -158,7 +183,7 @@ def main():
         )
 
     base.write.mode("overwrite").parquet(BASE_PATH)
-    del flights, base
+    del flights
     gc.collect()
     print(f"[BASE] Đã checkpoint ra {BASE_PATH}\n")
 
@@ -166,12 +191,28 @@ def main():
     # BƯỚC 1 — Section 1: Haversine distance
     # -------------------------------------------------------------------
     base = spark.read.parquet(BASE_PATH)
-    haversine_result = add_haversine_distance_feature(base, airports)
+
+    # Build DOT/IATA mapping once from the same eligible flight universe, then
+    # pass the resulting mapping table into the custom transformer. The actual
+    # matching logic (direct/level 1/2/3/manual) stays in custom_transformers.py.
+    airport_mapping = build_airport_code_mapping(
+        base,
+        airports,
+        airport_ref_df=airport_ref,
+        airport_id_df=airport_id,
+    )
+    print("[1] Airport code mapping built.")
+
+    haversine_result = add_haversine_distance_feature(
+        base,
+        airports,
+        airport_mapping_df=airport_mapping,
+    )
     base = merge_feature_into_base(
         spark, haversine_result,
         ["haversine_distance_km", "route_distance_km", "has_haversine_distance", "distance_feature_km"],
     )
-    del haversine_result
+    del haversine_result, airport_mapping, airport_ref, airport_id
     gc.collect()
     print(f"[1] Section 1 (Haversine) — {base.count():,} dòng, {len(base.columns)} cột\n")
 
@@ -267,8 +308,18 @@ def main():
         F.to_date(F.col("FLIGHT_TIMESTAMP")) >= F.lit(split_date)
     )
 
-    train_path = "data/model-ready/_train_split"
-    test_path = "data/model-ready/_test_split"
+    n_train = train_df.count()
+    n_test = test_df.count()
+
+    print(f"[8] Time split tại: {split_date}")
+    print(f"[8] Train: {n_train:,} dòng | Test: {n_test:,} dòng")
+    print(f"[8] Train ratio: {n_train / (n_train + n_test):.2%}")
+    print(f"[8] Test ratio:  {n_test / (n_train + n_test):.2%}\n")
+
+    # Persist the split before releasing DataFrames so the following
+    # leakage-safe fit step can reload clean Parquet datasets.
+    train_path = "data/model-ready/train_raw"
+    test_path = "data/model-ready/test_raw"
 
     train_df.write.mode("overwrite").parquet(train_path)
     test_df.write.mode("overwrite").parquet(test_path)
@@ -315,7 +366,7 @@ def main():
     print(outlier_model.bounds_summary().to_string(index=False))
 
     # -------------------------------------------------------------------
-    # BƯỚC 10 — Loại cột leakage, sắp xếp cột (khóa lên đầu), lưu output
+    # BƯỚC 10 — Loại cột leakage, sắp xếp cột, lưu output cuối
     # -------------------------------------------------------------------
 
     existing_leakage_cols = [
@@ -350,29 +401,42 @@ def main():
     train_final = train_final.select(*ordered_cols)
     test_final = test_final.select(*ordered_cols)
 
-    # ---------------------------------------------------------------
-    # Materialize vào checkpoint để cắt toàn bộ lineage
-    # ---------------------------------------------------------------
-    train_checkpoint = "data/model-ready/_train_final_checkpoint"
-    test_checkpoint = "data/model-ready/_test_final_checkpoint"
+    # -------------------------------------------------------------------
+    # Ghi output cuối
+    # -------------------------------------------------------------------
 
-    train_final.write.mode("overwrite").parquet(train_checkpoint)
-    test_final.write.mode("overwrite").parquet(test_checkpoint)
-
-    del train_final, test_final, train_df, test_df
-    gc.collect()
-
-    train_final = spark.read.parquet(train_checkpoint)
-    test_final = spark.read.parquet(test_checkpoint)
-
-    # ---------------------------------------------------------------
-    # Ghi output cuối — KHÔNG overwrite source lineage
-    # ---------------------------------------------------------------
     train_path = "data/model-ready/train"
     test_path = "data/model-ready/test"
 
     train_final.write.mode("overwrite").parquet(train_path)
     test_final.write.mode("overwrite").parquet(test_path)
+
+    # -------------------------------------------------------------------
+    # Lưu fitted models
+    # -------------------------------------------------------------------
+
+    outlier_model.write().overwrite().save(
+        f"{MODELS_DIR}/outlier_truncator"
+    )
+
+    encoder_model.write().overwrite().save(
+        f"{MODELS_DIR}/target_encoder"
+    )
+
+    print("\n[10] Đã lưu:")
+    print(
+        f"  - {train_path} "
+        f"({n_train:,} dòng, {len(train_final.columns)} cột)"
+    )
+    print(
+        f"  - {test_path} "
+        f"({n_test:,} dòng, {len(test_final.columns)} cột)"
+    )
+    print(
+        f"  - {MODELS_DIR}/outlier_truncator, "
+        f"{MODELS_DIR}/target_encoder"
+    )
+    print(f"\nCột đầu bảng (khóa): {key_cols_present}")
 
     # ---------------------------------------------------------------
     # Lưu fitted models
