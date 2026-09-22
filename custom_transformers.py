@@ -55,12 +55,222 @@ from pyspark.sql.types import DoubleType
 # và đối chiếu chéo nhiều nguồn — Wikipedia/FAA, Great Circle Mapper).
 # Đây là fix RẺ và DỨT ĐIỂM (chỉ 3 sân bay cố định), khác hẳn vấn đề DOT/IATA
 # ở trên (toàn bộ 1 tháng, không thể patch thủ công từng dòng).
+# DOT numeric -> IATA mapping theo notebook 06.ipynb.
+MANUAL_DOT_IATA_MAPPING = {
+    "11193": "CVG", "11278": "DCA", "12016": "GUM",
+    "12264": "IAD", "14222": "PPG", "14489": "RDM", "15016": "STL",
+}
+
 MANUAL_AIRPORT_COORDS = {
     # IATA_CODE: (LATITUDE, LONGITUDE)  -- nguồn: Wikipedia/FAA, đối chiếu Great Circle Mapper
     "ECP": (30.3417, -85.7973),    # Northwest Florida Beaches International Airport
     "PBG": (44.65083, -73.46806),  # Plattsburgh International Airport
     "UST": (29.95925, -81.33972),  # Northeast Florida Regional Airport (St. Augustine)
 }
+
+
+def _session_of(df):
+    """Lấy SparkSession từ DataFrame, tương thích cả PySpark < 3.3 (chưa có
+    thuộc tính DataFrame.sparkSession)."""
+    session = getattr(df, "sparkSession", None)
+    if session is not None:
+        return session
+    sql_ctx = getattr(df, "sql_ctx", None)
+    if sql_ctx is not None:
+        return sql_ctx.sparkSession
+    from pyspark.sql import SparkSession
+
+    return SparkSession.builder.getOrCreate()
+
+
+def _normalize_airport_descriptions(df):
+    """Chuẩn hoá bảng tra cứu DOT (Code, Description) -> (AIRPORT_CODE, Description)."""
+    if df is None:
+        return None
+    return df.select(
+        F.col("Code").cast("string").alias("AIRPORT_CODE"),
+        F.col("Description").cast("string").alias("Description"),
+    ).filter(F.col("AIRPORT_CODE").isNotNull())
+
+
+def build_airport_code_mapping(
+    flights_df, airports_df, airport_ref_df=None, airport_id_df=None, manual_mapping=None
+):
+    """
+    Dựng bảng AIRPORT_CODE -> IATA_CODE (+ toạ độ) theo logic notebook 06.ipynb.
+
+    Thứ tự ưu tiên (mỗi cấp chỉ xử lý các code CHƯA được cấp trước giải quyết,
+    nên kết quả luôn đúng 1 dòng / 1 AIRPORT_CODE, không cần dropDuplicates cuối):
+      0. direct  : code vốn đã là IATA -> giữ nguyên
+      1. level 1 : STATE + CITY + tên sân bay (từ đầu khớp)
+      2. level 2 : STATE + CITY
+      3. level 3 : STATE + tên sân bay
+      4. manual  : mapping thủ công (MANUAL_DOT_IATA_MAPPING), chỉ áp dụng cho
+                   code còn sót lại VÀ có mặt trong flights_df
+
+    manual_mapping=None -> dùng MANUAL_DOT_IATA_MAPPING mặc định.
+    manual_mapping={}   -> KHÔNG dùng mapping thủ công nào (khác với None).
+    """
+    spark = _session_of(flights_df)
+    manual_mapping = MANUAL_DOT_IATA_MAPPING if manual_mapping is None else manual_mapping
+
+    origin = flights_df.select(
+        F.col("ORIGIN_AIRPORT").cast("string").alias("AIRPORT_CODE")
+    ).filter(F.col("AIRPORT_CODE").isNotNull())
+    dest = flights_df.select(
+        F.col("DESTINATION_AIRPORT").cast("string").alias("AIRPORT_CODE")
+    ).filter(F.col("AIRPORT_CODE").isNotNull())
+    codes = origin.unionByName(dest).distinct()
+
+    airports = (
+        airports_df.select(
+            F.col("IATA_CODE").cast("string").alias("IATA_CODE"),
+            "AIRPORT", "CITY", "STATE", "LATITUDE", "LONGITUDE",
+        )
+        .filter(F.col("IATA_CODE").isNotNull())
+        .withColumn(
+            "AIRPORT_FIRST_WORD",
+            F.regexp_extract(F.trim(F.col("AIRPORT")), r"^([A-Za-z]+)", 1),
+        )
+        .dropDuplicates(["IATA_CODE"])
+    )
+
+    OUT_COLS = ["AIRPORT_CODE", "IATA_CODE", "AIRPORT", "CITY", "STATE", "LATITUDE", "LONGITUDE"]
+
+    direct = (
+        codes.alias("c")
+        .join(airports.alias("a"), F.col("c.AIRPORT_CODE") == F.col("a.IATA_CODE"), "inner")
+        .select(F.col("c.AIRPORT_CODE"), *[F.col(f"a.{c}") for c in OUT_COLS[1:]])
+    )
+
+    non_iata = codes.alias("c").join(
+        airports.alias("a"), F.col("c.AIRPORT_CODE") == F.col("a.IATA_CODE"), "left_anti"
+    )
+
+    # Bảng mô tả DOT: ưu tiên airport_id_df, bổ sung airport_ref_df cho code còn thiếu.
+    id_desc = _normalize_airport_descriptions(airport_id_df)
+    ref_desc = _normalize_airport_descriptions(airport_ref_df)
+    if id_desc is None:
+        descriptions = ref_desc
+    elif ref_desc is None:
+        descriptions = id_desc
+    else:
+        extra = ref_desc.join(id_desc.select("AIRPORT_CODE"), "AIRPORT_CODE", "left_anti")
+        descriptions = id_desc.unionByName(extra)
+
+    if descriptions is None:
+        dot = non_iata.select(
+            "AIRPORT_CODE",
+            F.lit(None).cast("string").alias("Description"),
+            F.lit("").alias("DOT_FIRST_WORD"),
+            F.lit("").alias("STATE_CODE"),
+            F.lit("").alias("AFTER_COLON_FIRST_WORD"),
+        )
+    else:
+        descriptions = descriptions.dropDuplicates(["AIRPORT_CODE"])
+        dot = (
+            non_iata.join(descriptions, "AIRPORT_CODE", "left")
+            # LƯU Ý: các regex dưới đây PHẢI là raw-string 1 lớp backslash
+            # (r"\s" trong raw-string = literal "\" + "s", KHÔNG phải whitespace
+            # -- đây chính là bug khiến STATE_CODE/AFTER_COLON luôn rỗng).
+            .withColumn("DOT_FIRST_WORD", F.trim(F.regexp_extract(F.col("Description"), r"^([^,]+)", 1)))
+            .withColumn("STATE_CODE", F.regexp_extract(F.col("Description"), r",\s*([A-Za-z]{2})\s*:", 1))
+            .withColumn("AFTER_COLON_FIRST_WORD", F.regexp_extract(F.col("Description"), r":\s*([A-Za-z]+)", 1))
+        )
+
+    def match(src, cond):
+        return (
+            src.alias("u")
+            .join(airports.alias("a"), cond, "inner")
+            .select(
+                F.col("u.AIRPORT_CODE"),
+                F.col("a.IATA_CODE"), F.col("a.AIRPORT"), F.col("a.CITY"),
+                F.col("a.STATE"), F.col("a.LATITUDE"), F.col("a.LONGITUDE"),
+            )
+            .dropDuplicates(["AIRPORT_CODE"])
+        )
+
+    same_state = F.upper(F.col("u.STATE_CODE")) == F.upper(F.col("a.STATE"))
+    same_city = F.lower(F.col("u.DOT_FIRST_WORD")) == F.lower(F.col("a.CITY"))
+    same_airport = F.lower(F.col("u.AFTER_COLON_FIRST_WORD")) == F.lower(F.col("a.AIRPORT_FIRST_WORD"))
+
+    m1 = match(dot, same_state & same_city & same_airport)
+    resolved_1 = [r["AIRPORT_CODE"] for r in m1.select("AIRPORT_CODE").distinct().collect()]
+    u1 = dot.filter(~F.col("AIRPORT_CODE").isin(resolved_1)) if resolved_1 else dot
+
+    m2 = match(u1, same_state & same_city)
+    resolved_2 = [r["AIRPORT_CODE"] for r in m2.select("AIRPORT_CODE").distinct().collect()]
+    u2 = u1.filter(~F.col("AIRPORT_CODE").isin(resolved_2)) if resolved_2 else u1
+
+    m3 = match(u2, same_state & same_airport)
+    resolved_3 = [r["AIRPORT_CODE"] for r in m3.select("AIRPORT_CODE").distinct().collect()]
+    u3 = u2.filter(~F.col("AIRPORT_CODE").isin(resolved_3)) if resolved_3 else u2
+
+    # LƯU Ý (bản vá quan trọng): 3 dòng "loại trừ" ở trên TRƯỚC ĐÂY dùng
+    # left_anti join giữa 1 DataFrame và chính derivative của nó
+    # (u1 = dot.join(m1...,"left_anti")) -- đây là self-join xuyên qua nhiều
+    # tầng cùng chia sẻ 1 lineage gốc (dot), lại cộng thêm việc tái dùng
+    # cùng chuỗi alias "u"/"a" ở nhiều nhánh join lồng nhau (4 lần gọi
+    # match() đều alias("a") trên CHÍNH 1 DataFrame airports). Đây là pattern
+    # nhạy cảm với phiên bản Spark/JVM: có thể chạy đúng ở bản Spark này
+    # nhưng ném Py4JJavaError lúc collect() ở bản khác (ghi nhận thực tế:
+    # test_mapping_manual_fallback_is_used fail trên máy khác, pass ở đây).
+    # Số mã sân bay (không phải số dòng chuyến bay) luôn nhỏ (vài trăm/vài
+    # nghìn), nên collect() về driver rồi lọc bằng isin() là AN TOÀN và loại
+    # bỏ hoàn toàn rủi ro self-join, bất kể phiên bản Spark.
+
+    manual_schema = "AIRPORT_CODE string, IATA_CODE string"
+    manual_rows = [(str(k), str(v)) for k, v in (manual_mapping or {}).items()]
+    manual_df = spark.createDataFrame(manual_rows, manual_schema)
+
+    # Chỉ giữ mã THỰC SỰ chưa được cấp trước (level 1/2/3) giải quyết --
+    # cũng dùng isin() với danh sách đã collect thay vì join lại với u3,
+    # cùng lý do như trên.
+    unresolved_codes = [r["AIRPORT_CODE"] for r in u3.select("AIRPORT_CODE").distinct().collect()]
+    manual_candidates = (
+        manual_df.filter(F.col("AIRPORT_CODE").isin(unresolved_codes))
+        if unresolved_codes
+        else manual_df.limit(0)
+    )
+
+    # Join với airports KHÔNG dùng alias string ("a"/"m") -- đổi tên cột
+    # bằng prefix "__" duy nhất, cùng pattern đã dùng để sửa bug ambiguous
+    # column ở add_haversine_distance_feature (Section 1). manual_candidates
+    # và airports_for_manual không chia sẻ lineage nào với nhau nên đây
+    # KHÔNG phải self-join -- hoàn toàn an toàn.
+    airports_for_manual = airports.select(
+        F.col("IATA_CODE").alias("__manual_iata"),
+        F.col("AIRPORT").alias("__manual_airport"),
+        F.col("CITY").alias("__manual_city"),
+        F.col("STATE").alias("__manual_state"),
+        F.col("LATITUDE").alias("__manual_lat"),
+        F.col("LONGITUDE").alias("__manual_lon"),
+    )
+    manual = (
+        manual_candidates
+        .join(
+            airports_for_manual,
+            F.col("IATA_CODE") == F.col("__manual_iata"),
+            "left",
+        )
+        .select(
+            F.col("AIRPORT_CODE"),
+            F.col("IATA_CODE"),
+            F.col("__manual_airport").alias("AIRPORT"),
+            F.col("__manual_city").alias("CITY"),
+            F.col("__manual_state").alias("STATE"),
+            F.col("__manual_lat").alias("LATITUDE"),
+            F.col("__manual_lon").alias("LONGITUDE"),
+        )
+    )
+
+    return (
+        direct.select(OUT_COLS)
+        .unionByName(m1.select(OUT_COLS))
+        .unionByName(m2.select(OUT_COLS))
+        .unionByName(m3.select(OUT_COLS))
+        .unionByName(manual.select(OUT_COLS))
+    )
 
 
 def patch_missing_airport_coordinates(airports_df):
@@ -134,7 +344,7 @@ def haversine_km(
     return pd.Series(distance)
 
 
-def add_haversine_distance_feature(flights_df, airports_df):
+def add_haversine_distance_feature(flights_df, airports_df, airport_mapping_df=None):
     """
     Join tọa độ sân bay đi/đến, tính Haversine, fallback về DISTANCE gốc khi
     thiếu tọa độ (chủ yếu là các dòng dùng mã DOT numeric — vd. MONTH=10).
@@ -152,20 +362,61 @@ def add_haversine_distance_feature(flights_df, airports_df):
     """
     airports_df = patch_missing_airport_coordinates(airports_df)
 
+    # Tên cột phụ trợ đặt tiền tố "__" và DUY NHẤT cho từng vế join -- nếu
+    # đặt trùng tên với cột gốc (ORIGIN_AIRPORT/DESTINATION_AIRPORT) thì Spark
+    # báo AMBIGUOUS_REFERENCE ngay khi join, đây là lỗi cũ của hàm này.
     origin_coords = airports_df.select(
-        F.col("IATA_CODE").alias("ORIGIN_AIRPORT"),
-        F.col("LATITUDE").alias("origin_lat"),
-        F.col("LONGITUDE").alias("origin_lon"),
-    )
+        F.col("IATA_CODE").cast("string").alias("__origin_iata_ref"),
+        F.col("LATITUDE").cast("double").alias("origin_lat"),
+        F.col("LONGITUDE").cast("double").alias("origin_lon"),
+    ).dropDuplicates(["__origin_iata_ref"])
     dest_coords = airports_df.select(
-        F.col("IATA_CODE").alias("DESTINATION_AIRPORT"),
-        F.col("LATITUDE").alias("dest_lat"),
-        F.col("LONGITUDE").alias("dest_lon"),
+        F.col("IATA_CODE").cast("string").alias("__dest_iata_ref"),
+        F.col("LATITUDE").cast("double").alias("dest_lat"),
+        F.col("LONGITUDE").cast("double").alias("dest_lon"),
+    ).dropDuplicates(["__dest_iata_ref"])
+
+    flights_for_join = (
+        flights_df
+        .withColumn("__origin_code", F.col("ORIGIN_AIRPORT").cast("string"))
+        .withColumn("__destination_code", F.col("DESTINATION_AIRPORT").cast("string"))
     )
 
+    if airport_mapping_df is None:
+        flights_for_join = (
+            flights_for_join
+            .withColumn("__origin_iata", F.col("__origin_code"))
+            .withColumn("__destination_iata", F.col("__destination_code"))
+        )
+    else:
+        origin_map = airport_mapping_df.select(
+            F.col("AIRPORT_CODE").cast("string").alias("__om_code"),
+            F.col("IATA_CODE").cast("string").alias("__om_iata"),
+        ).dropDuplicates(["__om_code"])
+        dest_map = airport_mapping_df.select(
+            F.col("AIRPORT_CODE").cast("string").alias("__dm_code"),
+            F.col("IATA_CODE").cast("string").alias("__dm_iata"),
+        ).dropDuplicates(["__dm_code"])
+
+        flights_for_join = (
+            flights_for_join
+            .join(origin_map, F.col("__origin_code") == F.col("__om_code"), "left")
+            .withColumn("__origin_iata", F.coalesce(F.col("__om_iata"), F.col("__origin_code")))
+            .drop("__om_code", "__om_iata")
+            .join(dest_map, F.col("__destination_code") == F.col("__dm_code"), "left")
+            .withColumn("__destination_iata", F.coalesce(F.col("__dm_iata"), F.col("__destination_code")))
+            .drop("__dm_code", "__dm_iata")
+        )
+
     joined = (
-        flights_df.join(origin_coords, on="ORIGIN_AIRPORT", how="left")
-        .join(dest_coords, on="DESTINATION_AIRPORT", how="left")
+        flights_for_join
+        .join(origin_coords, F.col("__origin_iata") == F.col("__origin_iata_ref"), "left")
+        .join(dest_coords, F.col("__destination_iata") == F.col("__dest_iata_ref"), "left")
+        .drop(
+            "__origin_code", "__destination_code",
+            "__origin_iata", "__destination_iata",
+            "__origin_iata_ref", "__dest_iata_ref",
+        )
     )
 
     joined = joined.withColumn(
@@ -198,9 +449,27 @@ def add_haversine_distance_feature(flights_df, airports_df):
 # thức — unit test đầy đủ nằm ở tests/test_custom_transformers.py)
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
+    import os
+    import sys
+
     from pyspark.sql import SparkSession
 
-    spark = SparkSession.builder.appName("custom_transformers_sanity_check").getOrCreate()
+    # BẮT BUỘC set TRƯỚC khi tạo SparkSession: pandas_udf (haversine_km) cần
+    # spawn Python worker process riêng cho từng partition. Không set biến
+    # này, Spark mặc định gọi lệnh "python" trên PATH -- trên Windows, nếu
+    # không có bản Python thật đứng trước App Execution Alias, hệ thống chặn
+    # lệnh và in "Python was not found; run without arguments to install..."
+    # thay vì chạy worker thật. sys.executable luôn là đường dẫn tuyệt đối
+    # tới đúng bản Python đang chạy script này, nên luôn đúng trên mọi OS.
+    os.environ["PYSPARK_PYTHON"] = sys.executable
+    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+
+    spark = (
+        SparkSession.builder.appName("custom_transformers_sanity_check")
+        .config("spark.pyspark.python", sys.executable)
+        .config("spark.pyspark.driver.python", sys.executable)
+        .getOrCreate()
+    )
 
     flights = spark.read.parquet("data/parquet/flights")
     airports = spark.read.parquet("data/parquet/airports")
@@ -683,7 +952,7 @@ class TargetEncoderModel(
         self._set(**kwargs)
 
     def _transform(self, dataset):
-        spark = dataset.sparkSession
+        spark = _session_of(dataset)
         columns_map = json.loads(self.getEncodingMapJson())
 
         result = dataset
@@ -755,19 +1024,29 @@ def add_route_congestion_feature(
     airport_col: str = "ORIGIN_AIRPORT",
     hour_col: str = "scheduled_hour",
     output_col: str = "route_congestion_count",
+    year_col: str = "YEAR",
 ):
     """
-    Đếm số chuyến bay được lên lịch tại cùng sân bay đi, cùng ngày, cùng
-    khung giờ (scheduled_hour) -- proxy cho mức độ tắc nghẽn lịch bay.
+    Đếm số chuyến bay được lên lịch tại cùng sân bay đi, cùng NĂM, cùng ngày,
+    cùng khung giờ (scheduled_hour) -- proxy cho mức độ tắc nghẽn lịch bay.
     Đây là con số tính từ chính lịch bay (không phải outcome thực tế), nên
     hợp lệ để tính trên toàn bộ dataset mà không cần tách train/fold riêng
     -- khác về bản chất với OutlierIQRTruncator/TargetEncoder (2 cái đó
     học từ phân phối của TARGET, nên bắt buộc chỉ fit trên train).
 
+    LƯU Ý (đã sửa, xem feature_dictionary.md mục "Vấn đề còn treo" #1):
+    group key BẮT BUỘC có year_col. Thiếu YEAR sẽ gộp nhầm ngày 15/1/2015
+    với ngày 15/1/2016 (và mọi năm khác trùng MONTH/DAY/giờ) thành 1 nhóm
+    -- vô hại với dataset 1 năm nhưng SAI ngay khi mở rộng nhiều năm.
+    year_col=None để tắt hành vi này (khôi phục behaviour cũ, không khuyến
+    khích) nếu chắc chắn dataset chỉ có đúng 1 năm.
+
     yêu cầu: flights_df đã có cột `hour_col` (chạy add_scheduled_hour_feature
     trước khi gọi hàm này).
     """
     window_cols = [airport_col, "MONTH", "DAY", hour_col]
+    if year_col is not None:
+        window_cols = [airport_col, year_col, "MONTH", "DAY", hour_col]
     congestion = flights_df.groupBy(*window_cols).agg(
         F.count(F.lit(1)).alias(output_col)
     )
