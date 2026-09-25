@@ -16,6 +16,7 @@ models/**
 
 # MLflow
 mlruns/
+mlflow.db
 
 # Credentials and local environments
 .env
@@ -40,6 +41,7 @@ metastore_db/
 checkpoints/
 checkpoint/
 
-# Logs
+# Logs and process state
 *.log
+*.pid
 logs/

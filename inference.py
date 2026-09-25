@@ -1,3 +1,99 @@
-"""Streaming inference entry point for a serialized Spark pipeline."""
+"""Spark Structured Streaming inference for both flight-delay models.
 
-# TODO: Load a fitted pipeline and score incoming streaming JSON data.
+Input JSON contains an optional ``event_id`` plus the 23 numeric model-ready
+features in ``SELECTED_FEATURES``. Historical lag features must be produced
+upstream. Missing feature values are filled with zero, matching training.
+"""
+
+import argparse
+from pathlib import Path
+
+from pyspark.ml import PipelineModel
+from pyspark.ml.classification import RandomForestClassificationModel
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.functions import vector_to_array
+from pyspark.ml.regression import RandomForestRegressionModel
+from pyspark.sql import SparkSession, functions as F
+from pyspark.sql.types import DoubleType, StringType, StructField, StructType
+
+from feature_contract import SELECTED_FEATURES
+
+
+ROOT = Path(__file__).resolve().parent
+DEFAULT_MODELS = {
+    "classification": ROOT / "models/random_forest_final_spark",
+    "regression": ROOT / "models/random_forest_regression_final_spark",
+}
+INPUT_SCHEMA = StructType(
+    [StructField("event_id", StringType(), True)]
+    + [StructField(name, DoubleType(), True) for name in SELECTED_FEATURES]
+)
+
+
+def load_verified_model(path, task):
+    model = PipelineModel.load(str(path))
+    if len(model.stages) != 2 or not isinstance(model.stages[0], VectorAssembler):
+        raise ValueError(f"Unexpected pipeline stages: {[type(s).__name__ for s in model.stages]}")
+    expected_model_type = (
+        RandomForestClassificationModel
+        if task == "classification"
+        else RandomForestRegressionModel
+    )
+    if not isinstance(model.stages[1], expected_model_type):
+        raise ValueError(f"Saved model is not a Spark Random Forest {task} model")
+    actual = model.stages[0].getInputCols()
+    if actual != SELECTED_FEATURES:
+        raise ValueError(f"Model feature contract differs: {actual}")
+    return model
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", choices=sorted(DEFAULT_MODELS), default="classification")
+    parser.add_argument("--model", type=Path)
+    parser.add_argument("--input-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--checkpoint-dir", type=Path, required=True)
+    parser.add_argument("--available-now", action="store_true")
+    args = parser.parse_args()
+    model_path = args.model or DEFAULT_MODELS[args.task]
+    if not model_path.is_dir():
+        parser.error(f"Spark PipelineModel is missing: {model_path}")
+    if not args.input_dir.is_dir():
+        parser.error(f"Input directory is missing: {args.input_dir}")
+    if len({args.input_dir.resolve(), args.output_dir.resolve(), args.checkpoint_dir.resolve()}) != 3:
+        parser.error("Input, output, and checkpoint directories must differ")
+
+    spark = SparkSession.builder.appName(f"FlightDelay{args.task.title()}Streaming").getOrCreate()
+    spark.sparkContext.setLogLevel("WARN")
+    try:
+        model = load_verified_model(model_path, args.task)
+        incoming = spark.readStream.schema(INPUT_SCHEMA).json(str(args.input_dir))
+        prepared = incoming.select("event_id", *SELECTED_FEATURES).fillna(
+            0, subset=SELECTED_FEATURES
+        )
+        transformed = model.transform(prepared)
+        if args.task == "classification":
+            scored = transformed.select(
+                "event_id",
+                F.col("prediction").cast("int").alias("prediction"),
+                vector_to_array("probability")[1].alias("probability_late_over_30m"),
+            )
+        else:
+            scored = transformed.select(
+                "event_id",
+                F.col("prediction").alias("predicted_arrival_delay_minutes"),
+            )
+        writer = (
+            scored.writeStream.format("json").outputMode("append")
+            .option("path", str(args.output_dir))
+            .option("checkpointLocation", str(args.checkpoint_dir))
+        )
+        query = writer.trigger(availableNow=True).start() if args.available_now else writer.start()
+        query.awaitTermination()
+    finally:
+        spark.stop()
+
+
+if __name__ == "__main__":
+    main()

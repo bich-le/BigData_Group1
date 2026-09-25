@@ -1,80 +1,56 @@
-# BigData_Group1-
-supervised learning pipeline spark subject
+# BigData Group 1 — Spark flight-delay models
 
-Đồ án xây dựng quy trình học có giám sát đầu-cuối bằng PySpark MLlib cho dữ liệu chuyến bay.
+PySpark ML project with two supervised tasks:
 
-Hai bài toán của đồ án:
+- classification: probability that arrival delay exceeds 30 minutes;
+- regression: predicted arrival delay in minutes.
 
-- Hồi quy: dự đoán số phút chuyến bay đến trễ.
-- Phân loại nhị phân: dự đoán chuyến bay bị trễ nghiêm trọng.
+## Runtime model paths
 
-## Cấu trúc repository
+Fitted Spark `PipelineModel` directories are excluded from Git because of
+their size. The production scripts use these paths:
 
-```text
-.
-├── README.md
-├── .gitignore
-├── requirements.txt
-├── custom_transformers.py
-├── mllib_pipeline.py
-├── inference.py
-├── benchmark_results.py
-├── submit_pipeline.sh
-├── data/
-│   └── README.md
-├── notebooks/
-│   └── README.md
-├── docs/
-│   └── REPORT.md
-└── models/
-    └── README.md
-```
+- `models/random_forest_final_spark` — recovered classification model;
+- `models/random_forest_regression_final_spark` — created after regression
+  grid selection and final fitting complete.
 
-## Thiết lập môi trường local
+Both pipelines consume the ordered 23 model-ready numeric fields in
+`feature_contract.py`. Historical airline, airport, and aircraft lag fields
+must be produced upstream. Streaming inference does not derive them from an
+individual raw flight event. Missing feature values are filled with zero.
 
-### Yêu cầu
+## Tested environment
 
-- Eclipse Temurin JDK 17.
-- Apache Spark 3.5.9.
-- Conda và Python 3.11.
+- Linux x86-64
+- Java 17.0.20.1
+- Python 3.12.3
+- Spark/PySpark 3.5.9
+- MLflow 3.10.1
 
-Đặt `JAVA_HOME` trỏ tới thư mục JDK 17 trên máy của bạn và thêm thư mục `bin` của JDK vào `PATH`. Không sao chép đường dẫn cài đặt từ máy khác.
+Create a virtual environment and install the pinned packages:
 
-Ví dụ cấu hình cho phiên PowerShell hiện tại:
-
-```powershell
-$env:JAVA_HOME = '<đường-dẫn-tới-jdk-17>'
-$env:Path = "$env:JAVA_HOME\bin;$env:Path"
-```
-
-Tạo và kích hoạt môi trường Conda:
-
-```powershell
-conda create -n bigdata-spark python=3.11 pip -y
-conda activate bigdata-spark
-```
-
-Cài các dependency đã khóa phiên bản:
-
-```powershell
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Kiểm tra môi trường:
+The large Spark models require substantial driver heap. Local validation and
+demos use `--driver-memory 32g`.
 
-```powershell
-java -version
-javac -version
-python --version
-python -c "import pyspark; print('pyspark', pyspark.__version__)"
-python -c "import pyarrow; print('pyarrow', pyarrow.__version__)"
-python -c "import pandas; print('pandas', pandas.__version__)"
-python -c "import numpy; print('numpy', numpy.__version__)"
-python -c "import mlflow; print('mlflow', mlflow.__version__)"
+## No-training instructor demo
+
+Run either task from the repository root:
+
+```bash
+./submit_pipeline.sh classification
+./submit_pipeline.sh regression
 ```
 
-## Chuẩn bị dữ liệu local
+The script reloads the saved artifact in a fresh Spark process, scores a small
+OOT sample, then performs one `spark.readStream` JSON inference run. It never
+trains a model.
 
-Mỗi thành viên tự đặt raw CSV trong `data/raw` và tạo typed Parquet tại `data/typed-parquet`. Xem lệnh dành riêng cho WSL/Bash và PowerShell trong [hướng dẫn chuẩn bị dữ liệu](data/README.md); WSL/Linux được khuyến nghị cho bước ghi Parquet.
-
-Các file Python hiện tại mới là bộ khung của đồ án; các chức năng xử lý dữ liệu, pipeline, mô hình và streaming chưa được triển khai.
+See `docs/PRODUCTION.md` for direct commands, example outputs, MLflow Registry
+records, and known limitations. Data preparation details are in
+`data/README.md`.
