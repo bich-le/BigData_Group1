@@ -660,6 +660,8 @@ def run_pipeline(
     data_path,
     model_output_path,
     label_col="ARRIVAL_DELAY",
+    param_grid=None,
+    grid_only=False,
 ):
     """
     Random Forest Regression pipeline.
@@ -827,7 +829,7 @@ def run_pipeline(
         X_valid,
         y_valid,
         CONFIGURE["random_forest"],
-        CONFIGURE["random_forest_grid"],
+        param_grid or CONFIGURE["random_forest_grid"],
         n_jobs=1,
         label_col=label_col,
         checkpoint_path=model_output_path.parent / "regression_grid_checkpoint.json",
@@ -835,6 +837,10 @@ def run_pipeline(
 
     print("\n[3] RF Regression CV results:")
     df_hyperparams_opts.show(truncate=False)
+
+    if grid_only:
+        print("[3] Grid-only shard complete; final fitting is intentionally deferred.", flush=True)
+        return None, None, df_feature_corr, df_corr, df_hyperparams_opts
 
     chosen = df_hyperparams_opts.limit(1).collect()
     final_hyperparams = (
@@ -882,6 +888,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-path", type=Path, default=DEFAULT_DATA_PATH)
     parser.add_argument("--model-output", type=Path, default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--grid-num-trees", type=int, nargs="+")
+    parser.add_argument("--grid-max-depth", type=int, nargs="+")
+    parser.add_argument("--grid-min-leaf", type=int, nargs="+")
+    parser.add_argument(
+        "--grid-only",
+        action="store_true",
+        help="Run/checkpoint the requested grid shard without fitting a final model.",
+    )
     args = parser.parse_args()
     if not args.data_path.is_dir():
         parser.error(f"Training data directory is missing: {args.data_path}")
@@ -890,13 +904,30 @@ if __name__ == "__main__":
     if not args.model_output.parent.is_dir():
         parser.error(f"Model output parent is missing: {args.model_output.parent}")
 
+    grid = {key: list(values) for key, values in CONFIGURE["random_forest_grid"].items()}
+    requested = {
+        "n_estimators": args.grid_num_trees,
+        "max_depth": args.grid_max_depth,
+        "min_samples_leaf": args.grid_min_leaf,
+    }
+    for key, values in requested.items():
+        if values is None:
+            continue
+        unsupported = sorted(set(values) - set(grid[key]))
+        if unsupported:
+            parser.error(f"Unsupported {key} values: {unsupported}; allowed: {grid[key]}")
+        grid[key] = values
+
     try:
         spark.sparkContext.setLogLevel("WARN")
         df_result_indicators, df_output_model, *_ = run_pipeline(
             data_path=str(args.data_path),
             model_output_path=args.model_output,
+            param_grid=grid,
+            grid_only=args.grid_only,
         )
-        df_result_indicators.show(truncate=False)
-        df_output_model.show(20, truncate=False)
+        if df_result_indicators is not None:
+            df_result_indicators.show(truncate=False)
+            df_output_model.show(20, truncate=False)
     finally:
         spark.stop()
