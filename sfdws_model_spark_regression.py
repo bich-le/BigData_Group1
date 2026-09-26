@@ -609,6 +609,96 @@ def grid_search_cv_model(
     ])
     return spark.createDataFrame(results, schema=schema).orderBy("rmse_valid")
 
+def run_single_cv_fold(
+    X_train,
+    y_train,
+    model,
+    param_grid,
+    fold_number,
+    label_col="ARRIVAL_DELAY",
+    checkpoint_path=None,
+):
+    """Fit and checkpoint exactly one of the established three CV folds."""
+    feature_cols = [column for column in X_train.columns if column != "__row_id"]
+    grid = list(_parameter_grid(param_grid))
+    if len(grid) != 1:
+        raise ValueError("Single-fold mode requires exactly one grid combination")
+    if fold_number not in (1, 2, 3):
+        raise ValueError("fold_number must be 1, 2, or 3")
+
+    train = X_train.join(y_train, "__row_id")
+    folds = train.withColumn(
+        "__fold",
+        F.pmod(
+            F.row_number().over(Window.orderBy(F.rand(42))) - 1,
+            F.lit(3),
+        ),
+    ).repartition(160).persist(StorageLevel.DISK_ONLY)
+    params = dict(model)
+    params.update(grid[0])
+    params_json = json.dumps(params, sort_keys=True)
+    fold_index = fold_number - 1
+    print(f"[3] Single-fold run starting: fold={fold_number}/3 params={params}", flush=True)
+
+    fitted = fit_random_forest(
+        folds.where(F.col("__fold") != fold_index),
+        feature_cols,
+        params,
+        label_col,
+    )
+    scored = fitted.transform(
+        folds.where(F.col("__fold") == fold_index)
+    ).select(label_col, "prediction").persist(StorageLevel.DISK_ONLY)
+    try:
+        metrics = {
+            name: RegressionEvaluator(
+                labelCol=label_col,
+                predictionCol="prediction",
+                metricName=name,
+            ).evaluate(scored)
+            for name in ("rmse", "mae", "r2")
+        }
+    finally:
+        scored.unpersist(blocking=True)
+        folds.unpersist(blocking=True)
+
+    row = {
+        "fold": fold_number,
+        "rmse": metrics["rmse"],
+        "mae": metrics["mae"],
+        "r2": metrics["r2"],
+        "params": params_json,
+    }
+    if checkpoint_path:
+        checkpoint = Path(checkpoint_path)
+        saved = {
+            "feature_cols": feature_cols,
+            "split": {"train_fraction": 0.8, "seed": 42, "oot_start": "2015-11-01"},
+            "cv_folds": 3,
+            "rows": [],
+        }
+        if checkpoint.exists():
+            saved = json.loads(checkpoint.read_text())
+            if saved.get("feature_cols") != feature_cols:
+                raise ValueError("Fold checkpoint feature contract does not match this run")
+        saved["rows"] = [
+            existing for existing in saved.get("rows", [])
+            if not (existing["fold"] == fold_number and existing["params"] == params_json)
+        ] + [row]
+        temporary = checkpoint.with_suffix(checkpoint.suffix + ".tmp")
+        temporary.write_text(json.dumps(saved, indent=2))
+        temporary.replace(checkpoint)
+    print(
+        f"[3] Single-fold run complete: fold={fold_number}/3 "
+        f"rmse={metrics['rmse']:.6f}, mae={metrics['mae']:.6f}, r2={metrics['r2']:.6f}",
+        flush=True,
+    )
+    del fitted
+    gc.collect()
+    spark._jvm.System.gc()
+    return row
+
+
 def model_result(
     X_train,
     y_train,
@@ -662,6 +752,7 @@ def run_pipeline(
     label_col="ARRIVAL_DELAY",
     param_grid=None,
     grid_only=False,
+    single_cv_fold=None,
 ):
     """
     Random Forest Regression pipeline.
@@ -822,6 +913,19 @@ def run_pipeline(
     X_valid = X_valid.fillna(0, subset=selected)
     X_oot = X_oot.fillna(0, subset=selected)
 
+    grid_config = param_grid or CONFIGURE["random_forest_grid"]
+    if single_cv_fold is not None:
+        run_single_cv_fold(
+            X_train,
+            y_train,
+            CONFIGURE["random_forest"],
+            grid_config,
+            single_cv_fold,
+            label_col=label_col,
+            checkpoint_path=model_output_path.parent / "regression_fold_checkpoint.json",
+        )
+        return None, None, df_feature_corr, df_corr, None
+
     # Huy-confirmed full grid: 12 combinations, each evaluated by 3-fold CV.
     df_hyperparams_opts = grid_search_cv_model(
         X_train,
@@ -829,7 +933,7 @@ def run_pipeline(
         X_valid,
         y_valid,
         CONFIGURE["random_forest"],
-        param_grid or CONFIGURE["random_forest_grid"],
+        grid_config,
         n_jobs=1,
         label_col=label_col,
         checkpoint_path=model_output_path.parent / "regression_grid_checkpoint.json",
@@ -896,6 +1000,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Run/checkpoint the requested grid shard without fitting a final model.",
     )
+    parser.add_argument(
+        "--single-cv-fold",
+        type=int,
+        choices=(1, 2, 3),
+        help="Fit and checkpoint only this one-based CV fold; skip full-model fitting.",
+    )
     args = parser.parse_args()
     if not args.data_path.is_dir():
         parser.error(f"Training data directory is missing: {args.data_path}")
@@ -925,6 +1035,7 @@ if __name__ == "__main__":
             model_output_path=args.model_output,
             param_grid=grid,
             grid_only=args.grid_only,
+            single_cv_fold=args.single_cv_fold,
         )
         if df_result_indicators is not None:
             df_result_indicators.show(truncate=False)
