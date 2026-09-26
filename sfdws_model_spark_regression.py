@@ -430,7 +430,7 @@ def recursive_feature_elimination_cv(
             F.row_number().over(Window.orderBy(F.rand(42))) - 1,
             F.lit(cv),
         ),
-    ).persist(StorageLevel.DISK_ONLY)
+    ).repartition(160).persist(StorageLevel.DISK_ONLY)
 
     evaluator = RegressionEvaluator(
         labelCol=label_col,
@@ -495,7 +495,7 @@ def grid_search_cv_model(
             F.row_number().over(Window.orderBy(F.rand(42))) - 1,
             F.lit(3),
         ),
-    ).persist(StorageLevel.DISK_ONLY)
+    ).repartition(160).persist(StorageLevel.DISK_ONLY)
 
     evaluators = {
         "rmse": RegressionEvaluator(labelCol=label_col, predictionCol="prediction", metricName="rmse"),
