@@ -12,7 +12,7 @@ from pyspark.ml.functions import vector_to_array
 from pyspark.ml.regression import RandomForestRegressionModel
 from pyspark.sql import SparkSession, functions as F
 
-from feature_contract import SELECTED_FEATURES
+from feature_contract import FEATURES_BY_TASK
 
 
 ROOT = Path(__file__).resolve().parent
@@ -50,14 +50,15 @@ def main():
         )
         if len(model.stages) != 2 or not isinstance(model.stages[1], expected_type):
             raise ValueError(f"Unexpected pipeline stages: {stages}")
+        feature_cols = FEATURES_BY_TASK[args.task]
         actual = model.stages[0].getInputCols()
-        if actual != SELECTED_FEATURES:
+        if actual != feature_cols:
             raise ValueError(f"Model feature contract differs: {actual}")
         with tempfile.TemporaryDirectory(prefix="spark-oot-") as directory:
             with zipfile.ZipFile(args.oot_zip) as archive:
                 archive.extract("OOT_Data/oot_data.parquet", directory)
             oot = spark.read.parquet(str(Path(directory) / "OOT_Data/oot_data.parquet"))
-            selected = [F.col(name).cast("double").alias(name) for name in SELECTED_FEATURES]
+            selected = [F.col(name).cast("double").alias(name) for name in feature_cols]
             if args.task == "regression":
                 selected.append(F.col("ARRIVAL_DELAY").cast("double").alias("ARRIVAL_DELAY"))
             prepared = (
@@ -66,7 +67,7 @@ def main():
                     (F.col("time_of_day_bucket") == "evening").cast("double"),
                 )
                 .select(*selected)
-                .fillna(0, subset=SELECTED_FEATURES)
+                .fillna(0, subset=feature_cols)
                 .limit(args.rows)
             )
             scored = model.transform(prepared)

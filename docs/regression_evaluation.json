@@ -1,0 +1,40 @@
+{
+  "status": "accepted",
+  "provenance": {
+    "source": "teammate confirmation",
+    "confirmation": "Exact winning PipelineModel fitted on the intended full 80% training split after parameter selection",
+    "zip_sha256": "48e22a2d557751443ae42b6f3a38e238c48d793b3851856e0bc8a3332ff48eba"
+  },
+  "model_path": "models/random_forest_regression_final_spark",
+  "pipeline_stages": [
+    "VectorAssembler",
+    "RandomForestRegressionModel"
+  ],
+  "rf_params": {
+    "numTrees": 500,
+    "maxDepth": 15,
+    "minInstancesPerNode": 5,
+    "featureSubsetStrategy": "sqrt",
+    "impurity": "variance",
+    "bootstrap": true,
+    "seed": 42
+  },
+  "selection_validation": {
+    "source": "teammate common 20% validation split",
+    "rows": 935697,
+    "rmse": 32.736849,
+    "mae": 16.256044,
+    "r2": 0.279717
+  },
+  "local_validation_reconstruction": {
+    "used_to_reject_model": false,
+    "reason": "Spark randomSplit membership changed with partition/order",
+    "rows": 935719
+  },
+  "oot_rows": 932084,
+  "oot_metrics": {
+    "rmse": 35.051807066478034,
+    "mae": 17.10129574664888,
+    "r2": 0.2677696539548666
+  }
+}

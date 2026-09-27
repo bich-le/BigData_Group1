@@ -1,56 +1,39 @@
 # BigData Group 1 — Spark flight-delay models
 
-PySpark ML project with two supervised tasks:
+PySpark ML project with two Production tasks:
 
 - classification: probability that arrival delay exceeds 30 minutes;
 - regression: predicted arrival delay in minutes.
 
-## Runtime model paths
+## Runtime artifacts
 
-Fitted Spark `PipelineModel` directories are excluded from Git because of
-their size. The production scripts use these paths:
+- `models/random_forest_final_spark` — classification `PipelineModel`;
+- `models/random_forest_regression_final_spark` — regression `PipelineModel`.
 
-- `models/random_forest_final_spark` — recovered classification model;
-- `models/random_forest_regression_final_spark` — created after regression
-  grid selection and final fitting complete.
+Model directories, datasets, MLflow state, logs, and caches are excluded from
+Git. Both models consume the task contracts in `feature_contract.py`. Historical
+lag features must be produced upstream; missing values are filled with zero.
 
-Both pipelines consume the ordered 23 model-ready numeric fields in
-`feature_contract.py`. Historical airline, airport, and aircraft lag fields
-must be produced upstream. Streaming inference does not derive them from an
-individual raw flight event. Missing feature values are filled with zero.
-
-## Tested environment
-
-- Linux x86-64
-- Java 17.0.20.1
-- Python 3.12.3
-- Spark/PySpark 3.5.9
-- MLflow 3.10.1
-
-Create a virtual environment and install the pinned packages:
+## Instructor Demo
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-```
-
-The large Spark models require substantial driver heap. Local validation and
-demos use `--driver-memory 32g`.
-
-## No-training instructor demo
-
-Run either task from the repository root:
-
-```bash
 ./submit_pipeline.sh classification
 ./submit_pipeline.sh regression
 ```
 
-The script reloads the saved artifact in a fresh Spark process, scores a small
-OOT sample, then performs one `spark.readStream` JSON inference run. It never
-trains a model.
+The scripts load existing models, validate a small OOT sample, and run one real
+Structured Streaming JSON batch. They never train. Default demo driver memory is
+32 GB and can be changed with `DRIVER_MEMORY`.
 
-See `docs/PRODUCTION.md` for direct commands, example outputs, MLflow Registry
-records, and known limitations. Data preparation details are in
-`data/README.md`.
+## Regression winner
+
+The selected model uses 500 trees, depth 15, and minimum leaf size 5. Selection
+used common validation RMSE 32.736849 because CV fold counts differed. Depth 18
+was skipped. Full OOT metrics: RMSE 35.051807, MAE 17.101296,
+R² 0.267770.
+
+See `docs/PRODUCTION.md`, `docs/REGRESSION_RESULTS.md`, and
+`docs/TASK_EVIDENCE.md` for commands and evidence.
