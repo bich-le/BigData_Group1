@@ -1,14 +1,14 @@
-# BigData_Group1-
-supervised learning pipeline spark subject
+# BigData_Group1
+Supervised learning pipeline for the Spark course
 
-Đồ án xây dựng quy trình học có giám sát đầu-cuối bằng PySpark MLlib cho dữ liệu chuyến bay.
+This project builds an end-to-end supervised learning pipeline with PySpark MLlib for flight data.
 
-Hai bài toán của đồ án:
+The project covers two tasks:
 
-- Hồi quy: dự đoán số phút chuyến bay đến trễ.
-- Phân loại nhị phân: dự đoán chuyến bay bị trễ nghiêm trọng.
+- Regression: predict the number of minutes a flight arrives late.
+- Binary classification: predict whether a flight is severely delayed.
 
-## Cấu trúc repository
+## Repository Structure
 
 ```text
 .
@@ -30,37 +30,37 @@ Hai bài toán của đồ án:
     └── README.md
 ```
 
-## Thiết lập môi trường local
+## Set Up the Local Environment
 
-### Yêu cầu
+### Requirements
 
 - Eclipse Temurin JDK 17.
 - Apache Spark 3.5.9.
-- Conda và Python 3.11.
+- Conda and Python 3.11.
 
-Đặt `JAVA_HOME` trỏ tới thư mục JDK 17 trên máy của bạn và thêm thư mục `bin` của JDK vào `PATH`. Không sao chép đường dẫn cài đặt từ máy khác.
+Set `JAVA_HOME` to the JDK 17 directory on your machine and add the JDK `bin` directory to `PATH`. Do not copy an installation path from another machine.
 
-Ví dụ cấu hình cho phiên PowerShell hiện tại:
+Example configuration for the current PowerShell session:
 
 ```powershell
-$env:JAVA_HOME = '<đường-dẫn-tới-jdk-17>'
+$env:JAVA_HOME = '<path-to-jdk-17>'
 $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 ```
 
-Tạo và kích hoạt môi trường Conda:
+Create and activate the Conda environment:
 
 ```powershell
 conda create -n bigdata-spark python=3.11 pip -y
 conda activate bigdata-spark
 ```
 
-Cài các dependency đã khóa phiên bản:
+Install the pinned dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-Kiểm tra môi trường:
+Verify the environment:
 
 ```powershell
 java -version
@@ -73,8 +73,8 @@ python -c "import numpy; print('numpy', numpy.__version__)"
 python -c "import mlflow; print('mlflow', mlflow.__version__)"
 ```
 
-## Chuẩn bị dữ liệu local
+## Prepare Local Data
 
-Mỗi thành viên tự đặt raw CSV trong `data/raw` và tạo typed Parquet tại `data/typed-parquet`. Xem lệnh dành riêng cho WSL/Bash và PowerShell trong [hướng dẫn chuẩn bị dữ liệu](data/README.md); WSL/Linux được khuyến nghị cho bước ghi Parquet.
+Each team member should place raw CSV files in `data/raw` and create typed Parquet at `data/typed-parquet`. See the WSL/Bash and PowerShell commands in the [data preparation guide](data/README.md); WSL/Linux is recommended for writing Parquet.
 
-Các file Python hiện tại mới là bộ khung của đồ án; các chức năng xử lý dữ liệu, pipeline, mô hình và streaming chưa được triển khai.
+The current Python files are project scaffolding; data processing, pipeline, modeling, and streaming functionality has not yet been implemented.
