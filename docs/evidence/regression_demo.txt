@@ -1,0 +1,96 @@
+26/09/27 18:20:03 WARN Utils: Your hostname, bailab-worker-64 resolves to a loopback address: 127.0.1.1; using 172.17.17.64 instead (on interface enp4s0)
+26/09/27 18:20:03 WARN Utils: Set SPARK_LOCAL_IP if you need to bind to another address
+26/09/27 18:20:04 INFO SparkContext: Running Spark version 3.5.9
+26/09/27 18:20:04 INFO SparkContext: OS info Linux, 7.0.0-31-generic, amd64
+26/09/27 18:20:04 INFO SparkContext: Java version 17.0.20.1
+26/09/27 18:20:04 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+26/09/27 18:20:04 INFO ResourceUtils: ==============================================================
+26/09/27 18:20:04 INFO ResourceUtils: No custom resources configured for spark.driver.
+26/09/27 18:20:04 INFO ResourceUtils: ==============================================================
+26/09/27 18:20:04 INFO SparkContext: Submitted application: ValidateRegressionModel
+26/09/27 18:20:04 INFO ResourceProfile: Default ResourceProfile created, executor resources: Map(cores -> name: cores, amount: 1, script: , vendor: , memory -> name: memory, amount: 1024, script: , vendor: , offHeap -> name: offHeap, amount: 0, script: , vendor: ), task resources: Map(cpus -> name: cpus, amount: 1.0)
+26/09/27 18:20:04 INFO ResourceProfile: Limiting resource is cpu
+26/09/27 18:20:04 INFO ResourceProfileManager: Added ResourceProfile id: 0
+26/09/27 18:20:04 INFO SecurityManager: Changing view acls to: honganh
+26/09/27 18:20:04 INFO SecurityManager: Changing modify acls to: honganh
+26/09/27 18:20:04 INFO SecurityManager: Changing view acls groups to:
+26/09/27 18:20:04 INFO SecurityManager: Changing modify acls groups to:
+26/09/27 18:20:04 INFO SecurityManager: SecurityManager: authentication disabled; ui acls disabled; users with view permissions: honganh; groups with view permissions: EMPTY; users with modify permissions: honganh; groups with modify permissions: EMPTY
+26/09/27 18:20:04 INFO Utils: Successfully started service 'sparkDriver' on port 40505.
+26/09/27 18:20:04 INFO SparkEnv: Registering MapOutputTracker
+26/09/27 18:20:04 INFO SparkEnv: Registering BlockManagerMaster
+26/09/27 18:20:04 INFO BlockManagerMasterEndpoint: Using org.apache.spark.storage.DefaultTopologyMapper for getting topology information
+26/09/27 18:20:04 INFO BlockManagerMasterEndpoint: BlockManagerMasterEndpoint up
+26/09/27 18:20:04 INFO SparkEnv: Registering BlockManagerMasterHeartbeat
+26/09/27 18:20:04 INFO DiskBlockManager: Created local directory at /tmp/blockmgr-223d2a2c-d0c5-4447-af4b-fe8782cfaa98
+26/09/27 18:20:04 INFO MemoryStore: MemoryStore started with capacity 19.0 GiB
+26/09/27 18:20:04 INFO SparkEnv: Registering OutputCommitCoordinator
+26/09/27 18:20:04 INFO JettyUtils: Start Jetty 0.0.0.0:4040 for SparkUI
+26/09/27 18:20:04 INFO Utils: Successfully started service 'SparkUI' on port 4040.
+26/09/27 18:20:04 INFO Executor: Starting executor ID driver on host 172.17.17.64
+26/09/27 18:20:04 INFO Executor: OS info Linux, 7.0.0-31-generic, amd64
+26/09/27 18:20:04 INFO Executor: Java version 17.0.20.1
+26/09/27 18:20:04 INFO Executor: Starting executor with user classpath (userClassPathFirst = false): ''
+26/09/27 18:20:04 INFO Executor: Created or updated repl class loader org.apache.spark.util.MutableURLClassLoader@1145a22f for default.
+26/09/27 18:20:04 INFO Utils: Successfully started service 'org.apache.spark.network.netty.NettyBlockTransferService' on port 36585.
+26/09/27 18:20:04 INFO NettyBlockTransferService: Server created on 172.17.17.64:36585
+26/09/27 18:20:04 INFO BlockManager: Using org.apache.spark.storage.RandomBlockReplicationPolicy for block replication policy
+26/09/27 18:20:04 INFO BlockManagerMaster: Registering BlockManager BlockManagerId(driver, 172.17.17.64, 36585, None)
+26/09/27 18:20:04 INFO BlockManagerMasterEndpoint: Registering block manager 172.17.17.64:36585 with 19.0 GiB RAM, BlockManagerId(driver, 172.17.17.64, 36585, None)
+26/09/27 18:20:04 INFO BlockManagerMaster: Registered BlockManager BlockManagerId(driver, 172.17.17.64, 36585, None)
+26/09/27 18:20:04 INFO BlockManager: Initialized BlockManager: BlockManagerId(driver, 172.17.17.64, 36585, None)
+26/09/27 18:24:25 WARN SparkStringUtils: Truncated the string representation of a plan since it was too large. This behavior can be adjusted by setting 'spark.sql.debug.maxToStringFields'.
+Task: regression
+Pipeline stages: ['VectorAssembler', 'RandomForestRegressionModel']
+Model feature count: 23
+Scored OOT rows: 20
+Small-subset metrics: {'RMSE': 18.62898077512191, 'MAE': 15.352663475145736, 'R2': -0.11270546180870289}
+{'ARRIVAL_DELAY': 8.0, 'predicted_arrival_delay_minutes': -7.252585765992283}
+{'ARRIVAL_DELAY': 6.0, 'predicted_arrival_delay_minutes': -5.135025130248099}
+{'ARRIVAL_DELAY': -4.0, 'predicted_arrival_delay_minutes': 6.9924023335409204}
+{'ARRIVAL_DELAY': -24.0, 'predicted_arrival_delay_minutes': -3.0067048343528757}
+{'ARRIVAL_DELAY': 3.0, 'predicted_arrival_delay_minutes': 2.5763059721680355}
+26/09/27 18:24:28 WARN Utils: Your hostname, bailab-worker-64 resolves to a loopback address: 127.0.1.1; using 172.17.17.64 instead (on interface enp4s0)
+26/09/27 18:24:28 WARN Utils: Set SPARK_LOCAL_IP if you need to bind to another address
+26/09/27 18:24:29 INFO SparkContext: Running Spark version 3.5.9
+26/09/27 18:24:29 INFO SparkContext: OS info Linux, 7.0.0-31-generic, amd64
+26/09/27 18:24:29 INFO SparkContext: Java version 17.0.20.1
+26/09/27 18:24:29 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+26/09/27 18:24:29 INFO ResourceUtils: ==============================================================
+26/09/27 18:24:29 INFO ResourceUtils: No custom resources configured for spark.driver.
+26/09/27 18:24:29 INFO ResourceUtils: ==============================================================
+26/09/27 18:24:29 INFO SparkContext: Submitted application: FlightDelayRegressionStreaming
+26/09/27 18:24:29 INFO ResourceProfile: Default ResourceProfile created, executor resources: Map(cores -> name: cores, amount: 1, script: , vendor: , memory -> name: memory, amount: 1024, script: , vendor: , offHeap -> name: offHeap, amount: 0, script: , vendor: ), task resources: Map(cpus -> name: cpus, amount: 1.0)
+26/09/27 18:24:29 INFO ResourceProfile: Limiting resource is cpu
+26/09/27 18:24:29 INFO ResourceProfileManager: Added ResourceProfile id: 0
+26/09/27 18:24:29 INFO SecurityManager: Changing view acls to: honganh
+26/09/27 18:24:29 INFO SecurityManager: Changing modify acls to: honganh
+26/09/27 18:24:29 INFO SecurityManager: Changing view acls groups to:
+26/09/27 18:24:29 INFO SecurityManager: Changing modify acls groups to:
+26/09/27 18:24:29 INFO SecurityManager: SecurityManager: authentication disabled; ui acls disabled; users with view permissions: honganh; groups with view permissions: EMPTY; users with modify permissions: honganh; groups with modify permissions: EMPTY
+26/09/27 18:24:29 INFO Utils: Successfully started service 'sparkDriver' on port 37611.
+26/09/27 18:24:29 INFO SparkEnv: Registering MapOutputTracker
+26/09/27 18:24:29 INFO SparkEnv: Registering BlockManagerMaster
+26/09/27 18:24:29 INFO BlockManagerMasterEndpoint: Using org.apache.spark.storage.DefaultTopologyMapper for getting topology information
+26/09/27 18:24:29 INFO BlockManagerMasterEndpoint: BlockManagerMasterEndpoint up
+26/09/27 18:24:29 INFO SparkEnv: Registering BlockManagerMasterHeartbeat
+26/09/27 18:24:29 INFO DiskBlockManager: Created local directory at /tmp/blockmgr-2e4832b1-27c9-46bc-bc04-2b162d9e5f5b
+26/09/27 18:24:29 INFO MemoryStore: MemoryStore started with capacity 19.0 GiB
+26/09/27 18:24:29 INFO SparkEnv: Registering OutputCommitCoordinator
+26/09/27 18:24:29 INFO JettyUtils: Start Jetty 0.0.0.0:4040 for SparkUI
+26/09/27 18:24:29 INFO Utils: Successfully started service 'SparkUI' on port 4040.
+26/09/27 18:24:29 INFO Executor: Starting executor ID driver on host 172.17.17.64
+26/09/27 18:24:29 INFO Executor: OS info Linux, 7.0.0-31-generic, amd64
+26/09/27 18:24:29 INFO Executor: Java version 17.0.20.1
+26/09/27 18:24:29 INFO Executor: Starting executor with user classpath (userClassPathFirst = false): ''
+26/09/27 18:24:29 INFO Executor: Created or updated repl class loader org.apache.spark.util.MutableURLClassLoader@1812ea62 for default.
+26/09/27 18:24:29 INFO Utils: Successfully started service 'org.apache.spark.network.netty.NettyBlockTransferService' on port 46427.
+26/09/27 18:24:29 INFO NettyBlockTransferService: Server created on 172.17.17.64:46427
+26/09/27 18:24:29 INFO BlockManager: Using org.apache.spark.storage.RandomBlockReplicationPolicy for block replication policy
+26/09/27 18:24:29 INFO BlockManagerMaster: Registering BlockManager BlockManagerId(driver, 172.17.17.64, 46427, None)
+26/09/27 18:24:29 INFO BlockManagerMasterEndpoint: Registering block manager 172.17.17.64:46427 with 19.0 GiB RAM, BlockManagerId(driver, 172.17.17.64, 46427, None)
+26/09/27 18:24:29 INFO BlockManagerMaster: Registered BlockManager BlockManagerId(driver, 172.17.17.64, 46427, None)
+26/09/27 18:24:29 INFO BlockManager: Initialized BlockManager: BlockManagerId(driver, 172.17.17.64, 46427, None)
+26/09/27 18:28:46 WARN ResolveWriteToStream: spark.sql.adaptive.enabled is not supported in streaming DataFrames/Datasets and will be disabled.
+26/09/27 18:28:46 WARN SparkStringUtils: Truncated the string representation of a plan since it was too large. This behavior can be adjusted by setting 'spark.sql.debug.maxToStringFields'.
+{"event_id":"regression-oot-sample-0001","predicted_arrival_delay_minutes":-7.252585765992283}

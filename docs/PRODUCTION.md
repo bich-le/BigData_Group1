@@ -1,67 +1,99 @@
 # Production inference
 
-The production scorer loads a fitted native Spark `PipelineModel` and applies
-it to Structured Streaming JSON. Classification uses
-`models/random_forest_final_spark`; regression uses
-`models/random_forest_regression_final_spark` after training completes.
+Two native Spark `PipelineModel` artifacts are verified locally:
+
+- classification: `models/random_forest_final_spark`;
+- regression: `models/random_forest_regression_final_spark`.
+
+Both have stages `VectorAssembler -> RandomForest{Classification,Regression}Model`.
+The artifacts are excluded from Git because of their size.
 
 ## Input contract
 
-Each input record must contain an optional string `event_id` and all 23 numeric
-fields listed in `feature_contract.py`. These are model-ready features. Several
-fields contain lagged airline, airport, or aircraft history and cannot be
-calculated honestly from one raw flight event, so the upstream feature system
-must provide them. JSON nulls are filled with `0`, matching final fitting. The
-scorer does not accept or require `label`, `ARRIVAL_DELAY`, or other outcomes.
+Each JSON record contains optional string `event_id` plus the 23 ordered numeric
+features in `feature_contract.py`. Airline, airport, and aircraft history/lag
+features must be engineered upstream. Streaming inference does not derive them
+from a raw flight event. Missing features are filled with zero, matching fitting.
+No target or outcome field is required for inference.
 
-`docs/sample_stream_input.json` is one real model-ready OOT example.
+Task-specific examples:
 
-## Validate serialized model
+- `docs/sample_classification_stream_input.json`;
+- `docs/sample_regression_stream_input.json`.
+
+## Regression selection and final evaluation
+
+Depth-18 configurations were skipped because their Spark MLlib tree growth was
+computationally infeasible on the available machine. CV fold counts differed, so
+the global winner was selected by RMSE on the common random 20% pre-OOT
+validation split (seed 42). The teammate confirmed that the supplied artifact is the exact winner fitted on the full 80% training split. A local `randomSplit` reconstruction produced different row membership, so the teammate metrics remain the authoritative validation record. OOT was reserved for final evaluation. See
+`docs/REGRESSION_RESULTS.md`, `docs/regression_selection.json`, and `docs/regression_evaluation.json`.
+
+Winner: 500 trees, depth 15, minimum 5 instances per node.
+
+- validation RMSE: 32.736849;
+- validation MAE: 16.256044;
+- validation R²: 0.279717;
+- full OOT rows: 932,084;
+- OOT RMSE: 35.051807;
+- OOT MAE: 17.101296;
+- OOT R²: 0.267770.
+
+## MLflow Registry
+
+| Task | Registered model | Version | Alias | Run ID |
+|---|---|---:|---|---|
+| Classification | FlightDelayRandomForestSpark | 1 | champion | `ff18ccd6201445efb032efcbe2992fff` |
+| Regression | FlightDelayRegressionSpark | 1 | champion | `4f320e8a8778499d9e58dc0f0832689c` |
+
+The local tracking database is `mlflow.db`; artifacts are in `mlruns/`. Both are
+runtime state excluded from Git.
+
+## Instructor Demo
+
+The demo reloads an existing artifact, scores a small OOT subset in a fresh
+process, then executes one `spark.readStream` JSON microbatch. It does not train.
 
 ```bash
-source .venv/bin/activate
-spark-submit --master 'local[2]' --driver-memory 20g validate_spark_model.py --task classification
-# After the regression artifact exists:
-# spark-submit --master 'local[2]' --driver-memory 20g validate_spark_model.py --task regression
+source ../.venv/bin/activate
+./submit_pipeline.sh classification
+./submit_pipeline.sh regression
 ```
 
-## One-shot streaming demonstration
+Classification output fields: `event_id`, `prediction`,
+`probability_late_over_30m`. Example verified output:
+
+```json
+{"event_id":"classification-oot-sample-0001","prediction":0,"probability_late_over_30m":0.29287657056394084}
+```
+
+Regression output fields: `event_id`,
+`predicted_arrival_delay_minutes`. Example verified output:
+
+```json
+{"event_id":"regression-oot-sample-0001","predicted_arrival_delay_minutes":-7.252585765992283}
+```
+
+Direct long-running streaming command:
 
 ```bash
-rm -rf /tmp/flight-stream-input /tmp/flight-stream-output /tmp/flight-stream-checkpoint
-mkdir -p /tmp/flight-stream-input
-cp docs/sample_stream_input.json /tmp/flight-stream-input/events.json
-spark-submit --master 'local[2]' --driver-memory 20g inference.py \
-  --task classification \
-  --input-dir /tmp/flight-stream-input \
-  --output-dir /tmp/flight-stream-output \
-  --checkpoint-dir /tmp/flight-stream-checkpoint \
-  --available-now
-cat /tmp/flight-stream-output/*.json
+spark-submit --master 'local[2]' --driver-memory 32g --conf spark.driver.maxResultSize=4g inference.py \
+  --task regression \
+  --input-dir /path/to/input \
+  --output-dir /path/to/output \
+  --checkpoint-dir /path/to/checkpoint
 ```
 
-Omit `--available-now` to leave the query running and score new JSON files as
-they arrive in the input directory.
+Add `--available-now` for a finite demonstration batch. Input, output, and
+checkpoint directories must differ.
 
-## MLflow registration
+## Tested environment and memory
 
-The project venv contains `mlflow==3.10.1` and `setuptools==81.0.0`. Register
-the already-fitted model without retraining:
+- Python 3.12.3
+- OpenJDK 17.0.20.1
+- Spark/PySpark 3.5.9
+- MLflow 3.10.1
+- PyArrow 23.0.1
 
-```bash
-spark-submit --master 'local[2]' --driver-memory 20g register_mlflow.py --task classification
-```
-
-This uses a local SQLite tracking/registry database, tags the validated model,
-and assigns the registered-model alias `champion`.
-
-
-The completed classification registration created:
-
-- run `ff18ccd6201445efb032efcbe2992fff`;
-- registered model `FlightDelayRandomForestSpark`, version 1;
-- alias `models:/FlightDelayRandomForestSpark@champion`;
-- run and model-version tag `validation.status=passed`.
-
-The local registry database is `mlflow.db`, and artifacts are under `mlruns/`.
-Both are runtime state and are excluded from Git.
+Instructor demos use 32 GB driver memory and `spark.driver.maxResultSize=4g` for
+the large regression forest. Model fitting is not part of the demo.

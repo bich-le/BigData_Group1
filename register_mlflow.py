@@ -4,6 +4,7 @@ This script only loads and logs a model. It never fits or retrains one.
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import mlflow
@@ -16,7 +17,7 @@ from pyspark.ml.classification import RandomForestClassificationModel
 from pyspark.ml.regression import RandomForestRegressionModel
 from pyspark.sql import SparkSession
 
-from feature_contract import SELECTED_FEATURES
+from feature_contract import FEATURES_BY_TASK
 
 
 ROOT = Path(__file__).resolve().parent
@@ -30,9 +31,9 @@ TASK_DEFAULTS = {
     },
     "regression": {
         "model": ROOT / "models/random_forest_regression_final_spark",
-        "registered_name": "FlightArrivalDelayRandomForestSpark",
+        "registered_name": "FlightDelayRegressionSpark",
         "training_rows": 3_739_186,
-        "origin": "full-grid-spark-training",
+        "origin": "teammate-confirmed-full-80pct-candidate",
     },
 }
 
@@ -58,6 +59,8 @@ def main():
     parser.add_argument("--experiment", default="flight-delay-production")
     parser.add_argument("--registered-name")
     parser.add_argument("--metric", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument("--metrics-file", type=Path)
+    parser.add_argument("--oot-rows", type=int, default=20)
     args = parser.parse_args()
     defaults = TASK_DEFAULTS[args.task]
     model_path = args.model or defaults["model"]
@@ -68,13 +71,20 @@ def main():
         metrics = parse_metrics(args.metric)
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
+    if args.metrics_file:
+        if not args.metrics_file.is_file():
+            parser.error(f"Metrics file is missing: {args.metrics_file}")
+        metrics_doc = json.loads(args.metrics_file.read_text())
+        for name, value in metrics_doc.get("oot_metrics", {}).items():
+            metrics[f"oot_{name}"] = float(value)
 
     spark = SparkSession.builder.appName(f"Register{args.task.title()}SparkModel").getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     try:
         model = PipelineModel.load(str(model_path))
-        if model.stages[0].getInputCols() != SELECTED_FEATURES:
-            raise ValueError("Saved model does not match the verified feature contract")
+        feature_cols = model.stages[0].getInputCols()
+        if feature_cols != FEATURES_BY_TASK[args.task]:
+            raise ValueError("Saved model does not match the verified task feature contract")
         expected_type = (
             RandomForestClassificationModel
             if args.task == "classification"
@@ -87,7 +97,7 @@ def main():
         mlflow.set_tracking_uri(args.tracking_uri)
         mlflow.set_experiment(args.experiment)
         signature = ModelSignature(
-            inputs=Schema([ColSpec("double", name) for name in SELECTED_FEATURES]),
+            inputs=Schema([ColSpec("double", name) for name in feature_cols]),
             outputs=Schema([ColSpec("double", "prediction")]),
         )
         estimator_params = {
@@ -104,16 +114,22 @@ def main():
                 "task": args.task,
                 "algorithm": type(estimator).__name__,
                 "training_rows": defaults["training_rows"],
-                "feature_count": len(SELECTED_FEATURES),
+                "feature_count": len(feature_cols),
                 **estimator_params,
             })
             if metrics:
                 mlflow.log_metrics(metrics)
             mlflow.set_tags({
                 "validation.status": "passed",
-                "validation.oot_rows": "20",
+                "validation.oot_rows": str(args.oot_rows),
                 "deployment.input": "pre-engineered-23-feature-json",
                 "model.origin": defaults["origin"],
+                "validation.source": (
+                    "teammate-confirmed-common-20pct"
+                    if args.task == "regression"
+                    else "local-verified"
+                ),
+                "evaluation.oot_source": "local-held-out",
             })
             mlflow.spark.log_model(
                 spark_model=model,

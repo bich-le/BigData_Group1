@@ -16,7 +16,7 @@ from pyspark.ml.regression import RandomForestRegressionModel
 from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
-from feature_contract import SELECTED_FEATURES
+from feature_contract import FEATURES_BY_TASK
 
 
 ROOT = Path(__file__).resolve().parent
@@ -24,10 +24,11 @@ DEFAULT_MODELS = {
     "classification": ROOT / "models/random_forest_final_spark",
     "regression": ROOT / "models/random_forest_regression_final_spark",
 }
-INPUT_SCHEMA = StructType(
-    [StructField("event_id", StringType(), True)]
-    + [StructField(name, DoubleType(), True) for name in SELECTED_FEATURES]
-)
+def input_schema(task):
+    return StructType(
+        [StructField("event_id", StringType(), True)]
+        + [StructField(name, DoubleType(), True) for name in FEATURES_BY_TASK[task]]
+    )
 
 
 def load_verified_model(path, task):
@@ -42,7 +43,7 @@ def load_verified_model(path, task):
     if not isinstance(model.stages[1], expected_model_type):
         raise ValueError(f"Saved model is not a Spark Random Forest {task} model")
     actual = model.stages[0].getInputCols()
-    if actual != SELECTED_FEATURES:
+    if actual != FEATURES_BY_TASK[task]:
         raise ValueError(f"Model feature contract differs: {actual}")
     return model
 
@@ -68,9 +69,10 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
     try:
         model = load_verified_model(model_path, args.task)
-        incoming = spark.readStream.schema(INPUT_SCHEMA).json(str(args.input_dir))
-        prepared = incoming.select("event_id", *SELECTED_FEATURES).fillna(
-            0, subset=SELECTED_FEATURES
+        feature_cols = FEATURES_BY_TASK[args.task]
+        incoming = spark.readStream.schema(input_schema(args.task)).json(str(args.input_dir))
+        prepared = incoming.select("event_id", *feature_cols).fillna(
+            0, subset=feature_cols
         )
         transformed = model.transform(prepared)
         if args.task == "classification":

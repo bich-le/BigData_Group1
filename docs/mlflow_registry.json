@@ -1,0 +1,63 @@
+{
+  "FlightDelayRandomForestSpark": {
+    "version": "1",
+    "alias": "champion",
+    "run_id": "ff18ccd6201445efb032efcbe2992fff",
+    "status": "READY",
+    "metrics": {},
+    "params": {
+      "algorithm": "Spark RandomForestClassifier",
+      "bootstrap": "True",
+      "class_weight": "balanced",
+      "featureSubsetStrategy": "sqrt",
+      "feature_count": "23",
+      "impurity": "gini",
+      "maxDepth": "15",
+      "minInstancesPerNode": "5",
+      "numTrees": "300",
+      "seed": "42",
+      "training_rows": "3739905"
+    },
+    "tags": {
+      "deployment.input": "pre-engineered-23-feature-json",
+      "model.origin": "fixed-final-spark-recovery",
+      "validation.oot_rows": "20",
+      "validation.status": "passed"
+    }
+  },
+  "FlightDelayRegressionSpark": {
+    "version": "1",
+    "alias": "champion",
+    "run_id": "4f320e8a8778499d9e58dc0f0832689c",
+    "status": "READY",
+    "metrics": {
+      "oot_mae": 17.10129574664888,
+      "oot_r2": 0.2677696539548666,
+      "oot_rmse": 35.051807066478034,
+      "validation_mae": 16.256044,
+      "validation_r2": 0.279717,
+      "validation_rmse": 32.736849
+    },
+    "params": {
+      "algorithm": "RandomForestRegressionModel",
+      "bootstrap": "True",
+      "featureSubsetStrategy": "sqrt",
+      "feature_count": "23",
+      "impurity": "variance",
+      "maxDepth": "15",
+      "minInstancesPerNode": "5",
+      "numTrees": "500",
+      "seed": "42",
+      "task": "regression",
+      "training_rows": "3739186"
+    },
+    "tags": {
+      "deployment.input": "pre-engineered-23-feature-json",
+      "evaluation.oot_source": "local-held-out",
+      "model.origin": "teammate-confirmed-full-80pct-candidate",
+      "validation.oot_rows": "932084",
+      "validation.source": "teammate-confirmed-common-20pct",
+      "validation.status": "passed"
+    }
+  }
+}

@@ -13,3 +13,10 @@ SELECTED_FEATURES = [
     "flight_computed_scheduled_duration_minutes", "flight_scheduled_minutes_per_km",
     "is_weekend", "time_of_day_bucket_evening",
 ]
+
+# Both fitted artifacts currently use the same verified ordered contract.
+# Keeping task keys explicit prevents inference from assuming this forever.
+FEATURES_BY_TASK = {
+    "classification": SELECTED_FEATURES,
+    "regression": SELECTED_FEATURES,
+}
