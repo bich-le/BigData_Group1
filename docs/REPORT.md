@@ -365,6 +365,7 @@ $$
 It shrinks coefficients smoothly, improving condition numbers of correlated predictors, but cannot produce sparse solutions (coefficients never reach exactly zero).
 
 * **Lasso Regularization ($L_1$)** adds penalty
+
 $$
 \|\boldsymbol{\beta}\|_1 = \sum_{j=1}^p |\beta_j|
 $$
