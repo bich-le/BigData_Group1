@@ -1,7 +1,7 @@
 {
   "status": "accepted",
   "provenance": {
-    "source": "teammate confirmation",
+    "source": "distributed training verification",
     "confirmation": "Exact winning PipelineModel fitted on the intended full 80% training split after parameter selection",
     "zip_sha256": "48e22a2d557751443ae42b6f3a38e238c48d793b3851856e0bc8a3332ff48eba"
   },
@@ -20,7 +20,7 @@
     "seed": 42
   },
   "selection_validation": {
-    "source": "teammate common 20% validation split",
+    "source": "standardized common 20% validation split",
     "rows": 935697,
     "rmse": 32.736849,
     "mae": 16.256044,

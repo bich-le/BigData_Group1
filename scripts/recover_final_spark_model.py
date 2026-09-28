@@ -1,4 +1,4 @@
-"""Fit only the fixed final Spark Random Forest from Huy's model-ready base.
+"""Fit the fixed final Spark Random Forest classification model from model-ready base.
 
 Run with spark-submit after installing the project's Spark requirements. This
 does not run feature filtering, hyperparameter search, or cross-validation.
@@ -6,24 +6,28 @@ does not run feature filtering, hyperparameter search, or cross-validation.
 The ordered feature contract below is the output of two complete runs of the
 exact feature-selection functions in ``sfdws_model_spark.py`` on 3,739,905
 training rows. In both runs, the missingness (0.7), concentration (0.9), and
-IV-guided correlation (0.7) stages removed no candidate features. This differs
-from the separate pandas notebook evidence showing 22 features; it is the
-authoritative contract for this Spark recovery because it was reproduced with
-the Spark code, data, split, and seed used here.
+IV-guided correlation (0.7) stages removed no candidate features.
 """
 
 import argparse
 from pathlib import Path
+import sys
 
 from pyspark.ml import Pipeline
 from pyspark.ml.classification import RandomForestClassifier
 from pyspark.ml.feature import VectorAssembler
 from pyspark.sql import SparkSession, Window, functions as F
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BASE = ROOT / "huy/model-ready/base"
-DEFAULT_OUTPUT = Path(__file__).resolve().parent / "models/random_forest_final_spark"
+DEFAULT_BASE = (
+    ROOT / "data/model-ready/base"
+    if (ROOT / "data/model-ready/base").exists()
+    else ROOT.parent / "huy/model-ready/base"
+)
+DEFAULT_OUTPUT = ROOT / "models/random_forest_final_spark"
 
 from feature_contract import SELECTED_FEATURES
 

@@ -12,10 +12,14 @@ from pyspark.ml.regression import RandomForestRegressionModel
 from pyspark.sql import SparkSession, functions as F
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = ROOT / "models/random_forest_regression_final_spark"
-DEFAULT_BASE = ROOT.parent / "huy/model-ready/base"
-DEFAULT_RESULT = ROOT / "docs/regression_diagnostic_recheck.json"
+DEFAULT_BASE = (
+    ROOT / "data/model-ready/base"
+    if (ROOT / "data/model-ready/base").exists()
+    else ROOT.parent / "huy/model-ready/base"
+)
+DEFAULT_RESULT = ROOT / "docs/evaluations/regression_diagnostic_recheck.json"
 EXPECTED_PARAMS = {
     "numTrees": 500,
     "maxDepth": 15,
@@ -172,8 +176,8 @@ def main():
             "expected_validation_metrics": EXPECTED_VALIDATION,
             "validation_metrics": validation,
             "validation_deltas": deltas,
-            "validation_matches_teammate": agrees,
-            "validation_record": "teammate-authoritative",
+            "validation_matches_benchmark": agrees,
+            "validation_record": "benchmark-authoritative",
             "local_validation_used_for_acceptance": False,
             "oot_metrics": oot,
         }

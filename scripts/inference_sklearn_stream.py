@@ -1,4 +1,4 @@
-"""Score pre-engineered streaming JSON with Huy's sklearn forest in Spark.
+"""Score pre-engineered streaming JSON with baseline scikit-learn Random Forest in Spark.
 
 Each JSON record must contain the 23 numeric model features below. This is a
 fallback for serving the original sklearn artifact; it does not create lag features.
@@ -7,16 +7,21 @@ fallback for serving the original sklearn artifact; it does not create lag featu
 import argparse
 from functools import lru_cache
 from pathlib import Path
+import sys
 
 import pandas as pd
 from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.functions import pandas_udf
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from feature_contract import SELECTED_FEATURES
 
 
-DEFAULT_MODEL = Path(__file__).resolve().parent.parent / "random_forest_final.pkl"
+DEFAULT_MODEL = ROOT.parent / "random_forest_final.pkl"
 INPUT_SCHEMA = StructType(
     [StructField("event_id", StringType(), True)]
     + [StructField(name, DoubleType(), True) for name in SELECTED_FEATURES]

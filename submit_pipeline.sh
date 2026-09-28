@@ -15,10 +15,10 @@ CHECKPOINT_DIR="/tmp/flight-${TASK}-checkpoint"
 
 rm -rf "$INPUT_DIR" "$OUTPUT_DIR" "$CHECKPOINT_DIR"
 mkdir -p "$INPUT_DIR"
-cp "$ROOT/docs/sample_${TASK}_stream_input.json" "$INPUT_DIR/events.json"
+cp "$ROOT/docs/contracts/sample_${TASK}_stream_input.json" "$INPUT_DIR/events.json"
 
 spark-submit --master 'local[2]' --driver-memory "$DRIVER_MEMORY" --conf spark.driver.maxResultSize=4g \
-  "$ROOT/validate_spark_model.py" --task "$TASK"
+  "$ROOT/scripts/validate_spark_model.py" --task "$TASK"
 
 spark-submit --master 'local[2]' --driver-memory "$DRIVER_MEMORY" --conf spark.driver.maxResultSize=4g \
   "$ROOT/inference.py" --task "$TASK" \

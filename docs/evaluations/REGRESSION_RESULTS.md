@@ -12,8 +12,8 @@ Hyperparameters were selected by the lowest RMSE on the shared random 20% pre-OO
 | 6 | 300 | 18 | 10 | — | — | — | — | — | — | — | n/a | SKIPPED — computational constraint |
 | 7 | 500 | 12 | 5 | 1 | 33.080266 | 16.426421 | 0.268120 | — | — | — | local | incomplete_no_common_validation |
 | 8 | 500 | 12 | 10 | 1 | 33.081906 | 16.425230 | 0.268047 | — | — | — | local | incomplete_no_common_validation |
-| 9 | 500 | 15 | 5 | 3 | 32.839363 | 16.225607 | 0.278115 | 32.736849 | 16.256044 | 0.279717 | teammate | complete |
-| 10 | 500 | 15 | 10 | 3 | 32.848214 | 16.223505 | 0.277725 | 32.748402 | 16.256401 | 0.279208 | teammate | complete |
+| 9 | 500 | 15 | 5 | 3 | 32.839363 | 16.225607 | 0.278115 | 32.736849 | 16.256044 | 0.279717 | cluster-shard | complete |
+| 10 | 500 | 15 | 10 | 3 | 32.848214 | 16.223505 | 0.277725 | 32.748402 | 16.256401 | 0.279208 | cluster-shard | complete |
 | 11 | 500 | 18 | 5 | — | — | — | — | — | — | — | n/a | SKIPPED — computational constraint |
 | 12 | 500 | 18 | 10 | — | — | — | — | — | — | — | n/a | SKIPPED — computational constraint |
 

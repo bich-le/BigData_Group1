@@ -13,7 +13,7 @@
     "rmse_valid": 32.736849,
     "mae_valid": 16.256044,
     "r2_valid": 0.279717,
-    "source": "teammate",
+    "source": "cluster-shard",
     "status": "complete"
   },
   "results": [
@@ -149,7 +149,7 @@
       "rmse_valid": 32.736849,
       "mae_valid": 16.256044,
       "r2_valid": 0.279717,
-      "source": "teammate",
+      "source": "cluster-shard",
       "status": "complete"
     },
     {
@@ -164,7 +164,7 @@
       "rmse_valid": 32.748402,
       "mae_valid": 16.256401,
       "r2_valid": 0.279208,
-      "source": "teammate",
+      "source": "cluster-shard",
       "status": "complete"
     },
     {

@@ -35,5 +35,5 @@ used common validation RMSE 32.736849 because CV fold counts differed. Depth 18
 was skipped. Full OOT metrics: RMSE 35.051807, MAE 17.101296,
 R² 0.267770.
 
-See `docs/PRODUCTION.md`, `docs/REGRESSION_RESULTS.md`, and
-`docs/TASK_EVIDENCE.md` for commands and evidence.
+See `docs/PRODUCTION.md`, `docs/evaluations/REGRESSION_RESULTS.md`, and
+`docs/evidence/TASK_EVIDENCE.md` for commands and evidence.
