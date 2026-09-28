@@ -1,7 +1,7 @@
 """Spark Structured Streaming inference for both flight-delay models.
 
 Input JSON contains an optional ``event_id`` plus the 23 numeric model-ready
-features in ``SELECTED_FEATURES``. Historical lag features must be produced
+features in ``FEATURES_BY_TASK``. Historical lag features must be produced
 upstream. Missing feature values are filled with zero, matching training.
 """
 
@@ -24,6 +24,8 @@ DEFAULT_MODELS = {
     "classification": ROOT / "models/random_forest_final_spark",
     "regression": ROOT / "models/random_forest_regression_final_spark",
 }
+
+
 def input_schema(task):
     return StructType(
         [StructField("event_id", StringType(), True)]
@@ -33,8 +35,9 @@ def input_schema(task):
 
 def load_verified_model(path, task):
     model = PipelineModel.load(str(path))
+    stage_names = [type(stage).__name__ for stage in model.stages]
     if len(model.stages) != 2 or not isinstance(model.stages[0], VectorAssembler):
-        raise ValueError(f"Unexpected pipeline stages: {[type(s).__name__ for s in model.stages]}")
+        raise ValueError(f"Unexpected pipeline stages: {stage_names}")
     expected_model_type = (
         RandomForestClassificationModel
         if task == "classification"
@@ -50,7 +53,9 @@ def load_verified_model(path, task):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", choices=sorted(DEFAULT_MODELS), default="classification")
+    parser.add_argument(
+        "--task", choices=sorted(DEFAULT_MODELS), default="classification"
+    )
     parser.add_argument("--model", type=Path)
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -62,15 +67,27 @@ def main():
         parser.error(f"Spark PipelineModel is missing: {model_path}")
     if not args.input_dir.is_dir():
         parser.error(f"Input directory is missing: {args.input_dir}")
-    if len({args.input_dir.resolve(), args.output_dir.resolve(), args.checkpoint_dir.resolve()}) != 3:
+    stream_paths = {
+        args.input_dir.resolve(),
+        args.output_dir.resolve(),
+        args.checkpoint_dir.resolve(),
+    }
+    if len(stream_paths) != 3:
         parser.error("Input, output, and checkpoint directories must differ")
 
-    spark = SparkSession.builder.appName(f"FlightDelay{args.task.title()}Streaming").getOrCreate()
+    spark = (
+        SparkSession.builder.appName(
+            f"FlightDelay{args.task.title()}Streaming"
+        ).getOrCreate()
+    )
     spark.sparkContext.setLogLevel("WARN")
     try:
         model = load_verified_model(model_path, args.task)
         feature_cols = FEATURES_BY_TASK[args.task]
-        incoming = spark.readStream.schema(input_schema(args.task)).json(str(args.input_dir))
+        incoming = (
+            spark.readStream.schema(input_schema(args.task))
+            .json(str(args.input_dir))
+        )
         prepared = incoming.select("event_id", *feature_cols).fillna(
             0, subset=feature_cols
         )
@@ -91,7 +108,11 @@ def main():
             .option("path", str(args.output_dir))
             .option("checkpointLocation", str(args.checkpoint_dir))
         )
-        query = writer.trigger(availableNow=True).start() if args.available_now else writer.start()
+        query = (
+            writer.trigger(availableNow=True).start()
+            if args.available_now
+            else writer.start()
+        )
         query.awaitTermination()
     finally:
         spark.stop()
