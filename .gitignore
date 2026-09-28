@@ -45,3 +45,4 @@ checkpoint/
 *.log
 *.pid
 logs/
+temp/
