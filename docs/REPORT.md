@@ -95,9 +95,12 @@ Machine learning estimators exhibit varying sensitivity to feature scales:
 * **Gradient-based optimization** (e.g., Linear Regression, GLMs, Neural Networks) achieves isotropic contour surfaces when features are standardized, preventing gradient oscillations and accelerating convergence.
 
 ##### Standard Z-Score Scaling
+
 Centers each feature to a sample mean of 0 and scales to a sample variance of 1:
 
-$$z_{ij} = \frac{x_{ij} - \mu_j}{\sigma_j}$$
+$$
+z_{ij} = \frac{x_{ij} - \mu_j}{\sigma_j}
+$$
 
 where:
 * $x_{ij}$ is the value of feature $j$ in observation $i$.
@@ -105,9 +108,12 @@ where:
 * $\sigma_j = \sqrt{\frac{1}{n-1} \sum_{i=1}^n (x_{ij} - \mu_j)^2}$ is the sample standard deviation of feature $j$.
 
 ##### Min-Max Range Scaling
+
 Linearly maps feature values into a bounded target interval $[a, b]$, most commonly $[0, 1]$ or $[-1, 1]$:
 
-$$x'_{ij} = \frac{x_{ij} - x_j^{\min}}{x_j^{\max} - x_j^{\min}} (b - a) + a$$
+$$
+x'_{ij} = \frac{x_{ij} - x_j^{\min}}{x_j^{\max} - x_j^{\min}} (b - a) + a
+$$
 
 where $x_j^{\min} = \min_{1 \le i \le n} x_{ij}$ and $x_j^{\max} = \max_{1 \le i \le n} x_{ij}$.
 
@@ -116,29 +122,51 @@ where $x_j^{\min} = \min_{1 \le i \le n} x_{ij}$ and $x_j^{\max} = \max_{1 \le i
 #### 2.2 Distributed Sparsity Preservation: `withMean=True` vs. `withStd=True`
 
 In distributed large-scale machine learning, datasets with high-cardinality categorical features (e.g., one-hot encoded airport codes) are represented using `pyspark.ml.linalg.SparseVector`. Rather than storing every element, a `SparseVector` records only non-zero coordinates:
-$$\mathbf{x} = [0, 12.0, 0, 0, 24.0, 0] \implies \text{indices} = [1, 4], \quad \text{values} = [12.0, 24.0]$$
+
+$$
+\mathbf{x} = [0, 12.0, 0, 0, 24.0, 0] \implies \text{indices} = [1, 4], \quad \text{values} = [12.0, 24.0]
+$$
+
 For a vector of dimension $p$ containing $k \ll p$ non-zero elements, storage complexity is $\mathcal{O}(k)$ instead of $\mathcal{O}(p)$.
 
-```
-Sparse representation:   [1: 12.0, 4: 24.0]               (Storage: 2 entries)
-withMean=True applied:   [-μ, 12.0-μ, -μ, -μ, 24.0-μ, -μ] (Storage: p entries, Dense!)
-withStd=True applied:    [1: 12.0/σ, 4: 24.0/σ]           (Storage: 2 entries, Sparse!)
-```
+| Mode / State | Materialized Vector Representation | Active Storage per Record | Distributed Heap Impact |
+| :--- | :--- | :--- | :--- |
+| **Initial `SparseVector`** | `[1: 12.0, 4: 24.0]` | $k$ entries ($\mathcal{O}(k)$) | Minimal footprint; zeroes unallocated |
+| **`withMean=True`** | `[-μ, 12.0-μ, -μ, -μ, 24.0-μ, -μ]` | $p$ entries ($\mathcal{O}(p)$ - **Dense**) | Severe memory explosion; GC thrashing & OOM |
+| **`withStd=True`** | `[1: 12.0/σ, 4: 24.0/σ]` | $k$ entries ($\mathcal{O}(k)$ - **Sparse**) | Zero coordinates untouched; memory preserved |
 
 ##### The Zero-Centering Hazard (`withMean=True`)
+
 Zero-centering subtracts the feature mean from every observation:
-$$x'_{ij} = x_{ij} - \mu_j$$
+
+$$
+x'_{ij} = x_{ij} - \mu_j
+$$
+
 If an entry is structurally zero ($x_{ij} = 0$), its transformed value becomes:
-$$x'_{ij} = 0 - \mu_j = -\mu_j$$
+
+$$
+x'_{ij} = 0 - \mu_j = -\mu_j
+$$
+
 Because $\mu_j \neq 0$ for almost all empirical features, every implicit zero coordinate becomes an explicit, non-zero floating-point number. Consequently, the sparse vector undergoes **dense expansion**:
 * Storage explodes from $\mathcal{O}(k)$ to $\mathcal{O}(p)$ per record.
 * Across hundreds of millions of distributed rows, memory pressure on Spark executor JVM heaps escalates exponentially, triggering garbage collection thrashing and executor Out-Of-Memory (`java.lang.OutOfMemoryError`) crashes.
 
 ##### Sparsity-Preserving Scaling (`withStd=True`)
+
 When mean centering is disabled (`withMean=False`) and only variance scaling is enabled (`withStd=True`):
-$$x'_{ij} = \frac{x_{ij}}{\sigma_j}$$
+
+$$
+x'_{ij} = \frac{x_{ij}}{\sigma_j}
+$$
+
 For any structural zero ($x_{ij} = 0$):
-$$x'_{ij} = \frac{0}{\sigma_j} = 0$$
+
+$$
+x'_{ij} = \frac{0}{\sigma_j} = 0
+$$
+
 Zero coordinates remain zero. The underlying sparsity index array is unaltered; no implicit zero is materialized into executor RAM.
 
 ##### Implementation in `mllib_pipeline.py`
@@ -162,16 +190,24 @@ Real-world operational delays exhibit heavy right-skewed fat tails: the vast maj
 
 Standard z-score scaling remains sensitive to these extremes because sample mean $\mu_j$ and standard deviation $\sigma_j$ are non-robust statistics. To stabilize variance before standardizing, we apply the variance-stabilizing `log1p` transformation:
 
-$$x'_{ij} = \ln(1 + x_{ij}) \quad \text{for } x_{ij} \ge 0$$
+$$
+x'_{ij} = \ln(1 + x_{ij}) \quad \text{for } x_{ij} \ge 0
+$$
 
 ##### Analytical Mechanism
 Taking the first derivative with respect to $x$:
-$$\frac{d}{dx}\ln(1 + x) = \frac{1}{1 + x}$$
+
+$$
+\frac{d}{dx}\ln(1 + x) = \frac{1}{1 + x}
+$$
+
 As $x \to \infty$, the marginal change $\frac{1}{1+x} \to 0$. Large absolute differences in extreme delay values are nonlinearly compressed into compact intervals, dampening the leverage of extreme outliers while strictly guaranteeing that $x'_{ij} = 0$ when $x_{ij} = 0$.
 
 Standardized z-scores are subsequently computed on the log-transformed variables:
 
-$$z_{ij} = \frac{\ln(1 + x_{ij}) - \mu'_j}{\sigma'_j}$$
+$$
+z_{ij} = \frac{\ln(1 + x_{ij}) - \mu'_j}{\sigma'_j}
+$$
 
 where $\mu'_j$ and $\sigma'_j$ are the sample mean and standard deviation of the transformed feature $x'_j$.
 
@@ -184,20 +220,35 @@ where $\mu'_j$ and $\sigma'_j$ are the sample mean and standard deviation of the
 Principal Component Analysis (PCA) finds an orthogonal linear transformation that projects data from dimension $p$ to dimension $k \le p$ while maximizing explained variance.
 
 For a zero-centered feature matrix $\mathbf{X} \in \mathbb{R}^{n \times p}$ with $n$ observations and $p$ features, the sample covariance matrix is:
-$$\mathbf{C} = \frac{1}{n - 1}\mathbf{X}^T\mathbf{X}$$
+
+$$
+\mathbf{C} = \frac{1}{n - 1}\mathbf{X}^T\mathbf{X}
+$$
+
 Traditional PCA solves the eigenvalue problem:
-$$\mathbf{C}\mathbf{v}_i = \lambda_i \mathbf{v}_i$$
+
+$$
+\mathbf{C}\mathbf{v}_i = \lambda_i \mathbf{v}_i
+$$
+
 where $\mathbf{v}_i$ is the $i$-th principal component (eigenvector) and $\lambda_i$ is its explained variance (eigenvalue).
 
 ##### The Distributed Bottleneck
 When $n \gg p$ (e.g., $n \approx 5.6 \times 10^6$ rows in this project), collecting raw observations to a single node to form $\mathbf{C}$ causes driver memory saturation and network I/O bottlenecks.
 
 PySpark avoids centralizing raw data by representing $\mathbf{X}$ as a distributed `RowMatrix`, where rows are partitioned across worker nodes:
-$$\mathbf{X} = \begin{bmatrix} \mathbf{x}_1^T \\ \mathbf{x}_2^T \\ \vdots \\ \mathbf{x}_n^T \end{bmatrix}$$
+
+$$
+\mathbf{X} = \begin{bmatrix} \mathbf{x}_1^T \\ \mathbf{x}_2^T \\ \vdots \\ \mathbf{x}_n^T \end{bmatrix}
+$$
 
 ##### SVD Formulation
 Any real matrix $\mathbf{X} \in \mathbb{R}^{n \times p}$ admits a Singular Value Decomposition:
-$$\mathbf{X} = \mathbf{U}\mathbf{\Sigma}\mathbf{V}^T$$
+
+$$
+\mathbf{X} = \mathbf{U}\mathbf{\Sigma}\mathbf{V}^T
+$$
+
 where:
 * $\mathbf{U} \in \mathbb{R}^{n \times r}$ has orthonormal columns ($\mathbf{U}^T\mathbf{U} = \mathbf{I}_r$), representing the left singular vectors.
 * $\mathbf{\Sigma} \in \mathbb{R}^{r \times r} = \text{diag}(\sigma_1, \sigma_2, \dots, \sigma_r)$ is a diagonal matrix containing singular values sorted in descending order: $\sigma_1 \ge \sigma_2 \ge \dots \ge \sigma_r \ge 0$.
@@ -206,24 +257,50 @@ where:
 
 ##### Concrete Matrix Walkthrough
 Consider a centered $3 \times 2$ matrix $\mathbf{A}$:
-$$\mathbf{A} = \begin{bmatrix} 1 & 2 \\ 0 & 0 \\ -1 & -2 \end{bmatrix}$$
+
+$$
+\mathbf{A} = \begin{bmatrix} 1 & 2 \\ 0 & 0 \\ -1 & -2 \end{bmatrix}
+$$
+
 Performing SVD decomposes $\mathbf{A} = \mathbf{U}\mathbf{\Sigma}\mathbf{V}^T$:
-$$\mathbf{A} = \underbrace{\begin{bmatrix} \frac{1}{\sqrt{2}} & 0 & \frac{1}{\sqrt{2}} \\ 0 & 1 & 0 \\ -\frac{1}{\sqrt{2}} & 0 & \frac{1}{\sqrt{2}} \end{bmatrix}}_{\mathbf{U}} \underbrace{\begin{bmatrix} \sqrt{10} & 0 \\ 0 & 0 \\ 0 & 0 \end{bmatrix}}_{\mathbf{\Sigma}} \underbrace{\begin{bmatrix} \frac{1}{\sqrt{5}} & \frac{2}{\sqrt{5}} \\ \frac{2}{\sqrt{5}} & -\frac{1}{\sqrt{5}} \end{bmatrix}^T}_{\mathbf{V}^T}$$
+
+$$
+\mathbf{A} = \underbrace{\begin{bmatrix} \frac{1}{\sqrt{2}} & 0 & \frac{1}{\sqrt{2}} \\ 0 & 1 & 0 \\ -\frac{1}{\sqrt{2}} & 0 & \frac{1}{\sqrt{2}} \end{bmatrix}}_{\mathbf{U}} \underbrace{\begin{bmatrix} \sqrt{10} & 0 \\ 0 & 0 \\ 0 & 0 \end{bmatrix}}_{\mathbf{\Sigma}} \underbrace{\begin{bmatrix} \frac{1}{\sqrt{5}} & \frac{2}{\sqrt{5}} \\ \frac{2}{\sqrt{5}} & -\frac{1}{\sqrt{5}} \end{bmatrix}^T}_{\mathbf{V}^T}
+$$
 
 ##### Mathematical Equivalence of SVD and PCA
 Computing the outer product $\mathbf{X}^T\mathbf{X}$:
-$$\mathbf{X}^T\mathbf{X} = (\mathbf{U}\mathbf{\Sigma}\mathbf{V}^T)^T (\mathbf{U}\mathbf{\Sigma}\mathbf{V}^T) = \mathbf{V}\mathbf{\Sigma}^T(\mathbf{U}^T\mathbf{U})\mathbf{\Sigma}\mathbf{V}^T$$
+
+$$
+\mathbf{X}^T\mathbf{X} = (\mathbf{U}\mathbf{\Sigma}\mathbf{V}^T)^T (\mathbf{U}\mathbf{\Sigma}\mathbf{V}^T) = \mathbf{V}\mathbf{\Sigma}^T(\mathbf{U}^T\mathbf{U})\mathbf{\Sigma}\mathbf{V}^T
+$$
+
 Since $\mathbf{U}^T\mathbf{U} = \mathbf{I}$:
-$$\mathbf{X}^T\mathbf{X} = \mathbf{V}\mathbf{\Sigma}^2\mathbf{V}^T$$
+
+$$
+\mathbf{X}^T\mathbf{X} = \mathbf{V}\mathbf{\Sigma}^2\mathbf{V}^T
+$$
+
 Multiplying both sides on the right by $\mathbf{V}$:
-$$(\mathbf{X}^T\mathbf{X})\mathbf{V} = \mathbf{V}\mathbf{\Sigma}^2(\mathbf{V}^T\mathbf{V}) = \mathbf{V}\mathbf{\Sigma}^2\mathbf{I} = \mathbf{V}\mathbf{\Sigma}^2$$
+
+$$
+(\mathbf{X}^T\mathbf{X})\mathbf{V} = \mathbf{V}\mathbf{\Sigma}^2(\mathbf{V}^T\mathbf{V}) = \mathbf{V}\mathbf{\Sigma}^2\mathbf{I} = \mathbf{V}\mathbf{\Sigma}^2
+$$
+
 Expressing $\mathbf{V}$ column by column as $[\mathbf{v}_1, \mathbf{v}_2, \dots, \mathbf{v}_p]$:
-$$\left[(\mathbf{X}^T\mathbf{X})\mathbf{v}_1, (\mathbf{X}^T\mathbf{X})\mathbf{v}_2, \dots, (\mathbf{X}^T\mathbf{X})\mathbf{v}_p\right] = \left[\sigma_1^2 \mathbf{v}_1, \sigma_2^2 \mathbf{v}_2, \dots, \sigma_p^2 \mathbf{v}_p\right]$$
+
+$$
+\left[(\mathbf{X}^T\mathbf{X})\mathbf{v}_1, (\mathbf{X}^T\mathbf{X})\mathbf{v}_2, \dots, (\mathbf{X}^T\mathbf{X})\mathbf{v}_p\right] = \left[\sigma_1^2 \mathbf{v}_1, \sigma_2^2 \mathbf{v}_2, \dots, \sigma_p^2 \mathbf{v}_p\right]
+$$
+
 This proves:
 1. The right singular vectors $\mathbf{v}_i$ of $\mathbf{X}$ are identical to the eigenvectors of $\mathbf{X}^T\mathbf{X}$.
 2. The eigenvalues of $\mathbf{X}^T\mathbf{X}$ are the squared singular values: $\lambda_i(\mathbf{X}^T\mathbf{X}) = \sigma_i^2$.
 3. The eigenvalues of sample covariance matrix $\mathbf{C} = \frac{1}{n-1}\mathbf{X}^T\mathbf{X}$ satisfy:
-   $$\lambda_i(\mathbf{C}) = \frac{\sigma_i^2}{n - 1}$$
+
+$$
+\lambda_i(\mathbf{C}) = \frac{\sigma_i^2}{n - 1}
+$$
 
 ##### Distributed Execution in Spark MLlib
 In PySpark `RowMatrix.computeSVD()`, Spark never transfers raw rows to the driver:
@@ -237,12 +314,22 @@ In PySpark `RowMatrix.computeSVD()`, Spark never transfers raw rows to the drive
 #### 3.2 Total Variance Retained Across $k$ Components
 
 The total variance of the feature matrix across all $p$ dimensions is the trace of the covariance matrix:
-$$\text{Var}_{\text{total}} = \sum_{j=1}^p \lambda_j = \frac{1}{n - 1}\sum_{j=1}^p \sigma_j^2$$
+
+$$
+\text{Var}_{\text{total}} = \sum_{j=1}^p \lambda_j = \frac{1}{n - 1}\sum_{j=1}^p \sigma_j^2
+$$
+
 When retaining the top $k$ principal components ($k < p$), the retained variance is:
-$$\text{Var}_k = \sum_{i=1}^k \lambda_i = \frac{1}{n - 1}\sum_{i=1}^k \sigma_i^2$$
+
+$$
+\text{Var}_k = \sum_{i=1}^k \lambda_i = \frac{1}{n - 1}\sum_{i=1}^k \sigma_i^2
+$$
+
 The cumulative explained variance ratio $R_k$ is the ratio of retained variance to total variance:
 
-$$R_k = \frac{\text{Var}_k}{\text{Var}_{\text{total}}} = \frac{\frac{1}{n - 1}\sum_{i=1}^k \sigma_i^2}{\frac{1}{n - 1}\sum_{j=1}^p \sigma_j^2} = \frac{\sum_{i=1}^k \lambda_i}{\sum_{j=1}^p \lambda_j}$$
+$$
+R_k = \frac{\text{Var}_k}{\text{Var}_{\text{total}}} = \frac{\frac{1}{n - 1}\sum_{i=1}^k \sigma_i^2}{\frac{1}{n - 1}\sum_{j=1}^p \sigma_j^2} = \frac{\sum_{i=1}^k \lambda_i}{\sum_{j=1}^p \lambda_j}
+$$
 
 In `mllib_pipeline.py`, PCA is applied with $k=10$, and the explained variance vector is inspected directly from `PCAModel.explainedVariance`:
 
@@ -261,7 +348,11 @@ variances = pca_model.explainedVariance.toArray().tolist()
 
 ##### ElasticNet OLS Formulation
 Standard Ordinary Least Squares (OLS) minimizes residual sum of squares:
-$$J_{\text{OLS}}(\boldsymbol{\beta}) = \frac{1}{2n}\sum_{i=1}^n \left( y_i - \mathbf{x}_i^T\boldsymbol{\beta} \right)^2$$
+
+$$
+J_{\text{OLS}}(\boldsymbol{\beta}) = \frac{1}{2n}\sum_{i=1}^n \left( y_i - \mathbf{x}_i^T\boldsymbol{\beta} \right)^2
+$$
+
 When features exhibit strong multicollinearity (e.g., flight scheduled elapsed time vs. route distance), OLS coefficient estimates suffer from severe variance inflation.
 
 To stabilize estimation:
@@ -270,7 +361,9 @@ To stabilize estimation:
 
 **ElasticNet** resolves this trade-off by combining both penalties into a unified objective:
 
-$$J(\boldsymbol{\beta}) = \frac{1}{2n}\sum_{i=1}^n \left( y_i - \mathbf{x}_i^T\boldsymbol{\beta} \right)^2 + \lambda \left[ \alpha \|\boldsymbol{\beta}\|_1 + (1 - \alpha)\frac{1}{2}\|\boldsymbol{\beta}\|_2^2 \right]$$
+$$
+J(\boldsymbol{\beta}) = \frac{1}{2n}\sum_{i=1}^n \left( y_i - \mathbf{x}_i^T\boldsymbol{\beta} \right)^2 + \lambda \left[ \alpha \|\boldsymbol{\beta}\|_1 + (1 - \alpha)\frac{1}{2}\|\boldsymbol{\beta}\|_2^2 \right]
+$$
 
 where:
 * $\alpha \in [0, 1]$ balances the penalty mixture:
@@ -284,7 +377,9 @@ Standard linear regression assumes normal errors with constant variance: $\mathb
 
 GLMs relax normality by allowing response variable $Y$ to follow an exponential dispersion family distribution (Gaussian, Poisson, Binomial, Gamma) and connecting the conditional mean $\mu = \mathbb{E}[Y \mid \mathbf{X}]$ to the linear predictor $\eta = \mathbf{x}^T\boldsymbol{\beta}$ via a monotonic, differentiable **link function** $g(\cdot)$:
 
-$$g(\mu) = \mathbf{x}^T\boldsymbol{\beta} \iff \mu = g^{-1}(\mathbf{x}^T\boldsymbol{\beta})$$
+$$
+g(\mu) = \mathbf{x}^T\boldsymbol{\beta} \iff \mu = g^{-1}(\mathbf{x}^T\boldsymbol{\beta})
+$$
 
 | Family                | Target Type                                 | Canonical Link $g(\mu)$                                   | Mean Mapping $\mu = g^{-1}(\eta)$                         | Coefficient Interpretation                                                                      |
 | --------------------- | ------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -300,27 +395,45 @@ $$g(\mu) = \mathbf{x}^T\boldsymbol{\beta} \iff \mu = g^{-1}(\mathbf{x}^T\boldsym
 #### 4.2 Linear Support Vector Classifier (LinearSVC) and Soft-Margin Hinge Loss
 
 Given binary classification observations $\{(\mathbf{x}_i, y_i)\}_{i=1}^n$ with labels $y_i \in \{-1, +1\}$, LinearSVC constructs an optimal separating hyperplane:
-$$\mathbf{w}^T\mathbf{x} - b = 0$$
+
+$$
+\mathbf{w}^T\mathbf{x} - b = 0
+$$
 
 ##### Hard-Margin Geometric Formulation
 When data is linearly separable, parallel bounding hyperplanes define the margin:
-$$\mathbf{w}^T\mathbf{x} - b = +1 \quad \text{and} \quad \mathbf{w}^T\mathbf{x} - b = -1$$
-The geometric margin distance is $\frac{2}{\|\mathbf{w}\|_2}$. Maximizing this margin corresponds to minimizing $\frac{1}{2}\|\mathbf{w}\|_2^2$ subject to:
-$$y_i(\mathbf{w}^T\mathbf{x}_i - b) \ge 1, \quad \forall i \in \{1, \dots, n\}$$
 
-```
-          Class +1:  w^T x - b >= +1
-          ----------------------------- (Positive Margin Boundary)
-                     | Margin = 2 / ||w||_2
-          - - - - - -|- - - - - - - - - (Separating Hyperplane: w^T x - b = 0)
-                     |
-          ----------------------------- (Negative Margin Boundary)
-          Class -1:  w^T x - b <= -1
+$$
+\mathbf{w}^T\mathbf{x} - b = +1 \quad \text{and} \quad \mathbf{w}^T\mathbf{x} - b = -1
+$$
+
+The geometric margin distance is $\frac{2}{\|\mathbf{w}\|_2}$. Maximizing this margin corresponds to minimizing $\frac{1}{2}\|\mathbf{w}\|_2^2$ subject to:
+
+$$
+y_i(\mathbf{w}^T\mathbf{x}_i - b) \ge 1, \quad \forall i \in \{1, \dots, n\}
+$$
+
+```mermaid
+flowchart TD
+    classDef pos fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1;
+    classDef dec fill:#fffde7,stroke:#fbc02d,stroke-width:2px,stroke-dasharray: 5 5,color:#f57f17;
+    classDef neg fill:#ffebee,stroke:#c62828,stroke-width:2px,color:#b71c1c;
+
+    PosBoundary["Positive Margin Hyperplane: wᵀx - b = +1<br/>Class +1 Boundary (Support Vectors)"]:::pos
+    DecBoundary["Optimal Separating Hyperplane: wᵀx - b = 0<br/>Decision Boundary (Margin = 2 / ||w||₂)"]:::dec
+    NegBoundary["Negative Margin Hyperplane: wᵀx - b = -1<br/>Class -1 Boundary (Support Vectors)"]:::neg
+
+    PosBoundary ===|"Half-Margin: 1 / ||w||₂"| DecBoundary
+    DecBoundary ===|"Half-Margin: 1 / ||w||₂"| NegBoundary
 ```
 
 ##### Soft-Margin Relaxation via Slack Variables
 When classes overlap or contain outliers, hard separation is impossible. We introduce non-negative slack variables $\xi_i \ge 0$, relaxing the constraint:
-$$y_i(\mathbf{w}^T\mathbf{x}_i - b) \ge 1 - \xi_i$$
+
+$$
+y_i(\mathbf{w}^T\mathbf{x}_i - b) \ge 1 - \xi_i
+$$
+
 Slack variables quantify geometric violations:
 * $\xi_i = 0$: Point lies on or beyond the correct margin boundary.
 * $0 < \xi_i \le 1$: Point lies within the margin boundary but is correctly classified.
@@ -328,12 +441,22 @@ Slack variables quantify geometric violations:
 
 ##### Soft-Margin Hinge Loss Derivation
 The soft-margin optimization penalizes both weight norm and margin violations:
-$$\min_{\mathbf{w}, b, \mathbf{\xi}} \frac{1}{2}\|\mathbf{w}\|_2^2 + C \sum_{i=1}^n \xi_i \quad \text{subject to} \quad \xi_i \ge 1 - y_i(\mathbf{w}^T\mathbf{x}_i - b) \quad \text{and} \quad \xi_i \ge 0$$
+
+$$
+\min_{\mathbf{w}, b, \mathbf{\xi}} \frac{1}{2}\|\mathbf{w}\|_2^2 + C \sum_{i=1}^n \xi_i \quad \text{subject to} \quad \xi_i \ge 1 - y_i(\mathbf{w}^T\mathbf{x}_i - b) \quad \text{and} \quad \xi_i \ge 0
+$$
+
 Combining both constraints yields the minimal valid slack:
-$$\xi_i^* = \max\left(0, 1 - y_i(\mathbf{w}^T\mathbf{x}_i - b)\right)$$
+
+$$
+\xi_i^* = \max\left(0, 1 - y_i(\mathbf{w}^T\mathbf{x}_i - b)\right)
+$$
+
 This defines the **hinge loss function** $L_{\text{hinge}}(y, \hat{y}) = \max(0, 1 - y \hat{y})$. Substituting $\xi_i^*$ yields the unconstrained soft-margin LinearSVC objective:
 
-$$\min_{\mathbf{w}, b} \frac{1}{2}\|\mathbf{w}\|_2^2 + C \sum_{i=1}^n \max\left(0, 1 - y_i\left(\mathbf{w}^T\mathbf{x}_i - b\right)\right)$$
+$$
+\min_{\mathbf{w}, b} \frac{1}{2}\|\mathbf{w}\|_2^2 + C \sum_{i=1}^n \max\left(0, 1 - y_i\left(\mathbf{w}^T\mathbf{x}_i - b\right)\right)
+$$
 
 where $C > 0$ controls the trade-off: large $C$ heavily penalizes margin violations (narrow margin, risk of overfitting); small $C$ tolerates errors to produce a wider, more robust margin.
 
@@ -352,7 +475,11 @@ Random Forest builds an ensemble of $B$ independent decision trees $\{T_1, \dots
 
 * **Variance Reduction Mathematics:**
   If each individual tree has variance $\sigma^2$ and average pairwise inter-tree correlation is $\rho$, the variance of the ensemble average is:
-  $$\text{Var}\left(\frac{1}{B}\sum_{b=1}^B \hat{f}_b(\mathbf{x})\right) = \rho\sigma^2 + \frac{1 - \rho}{B}\sigma^2$$
+
+$$
+\text{Var}\left(\frac{1}{B}\sum_{b=1}^B \hat{f}_b(\mathbf{x})\right) = \rho\sigma^2 + \frac{1 - \rho}{B}\sigma^2
+$$
+
   As the number of trees $B \to \infty$, the second term $\frac{1-\rho}{B}\sigma^2 \to 0$. However, the remaining variance is bounded from below by $\rho\sigma^2$.
 * **Feature Subspace Sampling ($m = \sqrt{p}$):**
   To drive down $\rho$, Random Forest enforces feature subspace sampling at every split, evaluating only a random subset of $m$ features ($m = \lfloor\sqrt{p}\rfloor$ for classification, $m = \lfloor p/3\rfloor$ or $\sqrt{p}$ for regression). This prevents dominant features from dictating the top splits of every tree, decorrelating ensemble members.
@@ -362,13 +489,24 @@ Random Forest builds an ensemble of $B$ independent decision trees $\{T_1, \dots
 ##### Gradient-Boosted Trees (Sequential Residual Fitting)
 Gradient-Boosted Trees (GBT) build trees sequentially in an additive stage-wise manner:
 1. Initialize baseline prediction with optimal constant:
-   $$F_0(\mathbf{x}) = \arg\min_\gamma \sum_{i=1}^n L(y_i, \gamma)$$
+
+$$
+F_0(\mathbf{x}) = \arg\min_\gamma \sum_{i=1}^n L(y_i, \gamma)
+$$
+
 2. For boosting rounds $m = 1, 2, \dots, M$:
    * Compute pseudo-residuals (negative gradient of the loss function):
-     $$r_{im} = -\left[\frac{\partial L(y_i, F(\mathbf{x}_i))}{\partial F(\mathbf{x}_i)}\right]_{F=F_{m-1}}$$
+
+$$
+r_{im} = -\left[\frac{\partial L(y_i, F(\mathbf{x}_i))}{\partial F(\mathbf{x}_i)}\right]_{F=F_{m-1}}
+$$
+
    * Fit a shallow decision tree $h_m(\mathbf{x})$ to predict pseudo-residuals $r_{im}$.
    * Update the ensemble using shrinkage (learning rate) $\eta \in (0, 1]$:
-     $$F_m(\mathbf{x}) = F_{m-1}(\mathbf{x}) + \eta h_m(\mathbf{x})$$
+
+$$
+F_m(\mathbf{x}) = F_{m-1}(\mathbf{x}) + \eta h_m(\mathbf{x})
+$$
 
 ##### Histogram-Based Feature Binning (`maxBins`)
 Evaluating split points for continuous features across distributed data is computationally prohibitive. Spark MLlib discretizes continuous features into a finite number of bins controlled by `maxBins` (default 32):
@@ -377,19 +515,31 @@ Evaluating split points for continuous features across distributed data is compu
 * Aggregating compact bin histograms requires orders of magnitude less network shuffle I/O than transmitting raw continuous feature values.
 
 ##### Why GBT Cannot Build Trees in Parallel
-The pseudo-residual $r_{im}$ at round $m$ cannot be calculated until $F_{m-1}(\mathbf{x})$ is completely evaluated. Consequently:
-$$\text{Tree } T_m \text{ has a strict serial dependency on } T_{m-1}$$
+The pseudo-residual $r_{im}$ at round $m$ cannot be calculated until $F_{m-1}(\mathbf{x})$ is completely evaluated. Consequently, each tree $T_m$ has a strict serial dependency on $T_{m-1}$:
+
+$$
+F_m(\mathbf{x}) = F_{m-1}(\mathbf{x}) + \eta h_m(\mathbf{x}) \implies T_m \text{ depends directly on } T_{m-1}
+$$
+
 Spark GBT cannot parallelize across trees. Parallelism is strictly intra-tree (partitioning data rows and computing histogram bins across executors for one split at a time).
 
-```
-Random Forest Distributed Workflow (Parallel Trees across Executors):
-[Worker 1] ----> Builds Tree 1, Tree 4, Tree 7 --------\
-[Worker 2] ----> Builds Tree 2, Tree 5, Tree 8 ---------> [Driver Aggregates Forest]
-[Worker 3] ----> Builds Tree 3, Tree 6, Tree 9 --------/
+```mermaid
+flowchart TD
+    subgraph RF ["Random Forest: Embarrassingly Parallel Bagging (Inter-Tree Parallelism)"]
+        direction LR
+        W1["Worker 1 (Executor)"] --> T1["Tree 1"] & T4["Tree 4"] & T7["Tree 7"]
+        W2["Worker 2 (Executor)"] --> T2["Tree 2"] & T5["Tree 5"] & T8["Tree 8"]
+        W3["Worker 3 (Executor)"] --> T3["Tree 3"] & T6["Tree 6"] & T9["Tree 9"]
+        T1 & T4 & T7 & T2 & T5 & T8 & T3 & T6 & T9 --> DriverRF["Driver: Aggregate Forest<br/>(Averaging / Majority Voting)"]
+    end
 
-Gradient-Boosted Trees Distributed Workflow (Sequential Dependency Chain):
-[Tree 1] ==residuals==> [Tree 2] ==residuals==> [Tree 3] ==residuals==> [Tree M]
-  (Executors parallelize histogram bins for one tree at a time; trees cannot overlap)
+    subgraph GBT ["Gradient-Boosted Trees: Strict Sequential Dependency (Intra-Tree Parallelism Only)"]
+        direction LR
+        G1["Tree 1<br/>(Fit initial target)"] -->|Residuals r₁| G2["Tree 2<br/>(Fit r₁)"]
+        G2 -->|Residuals r₂| G3["Tree 3<br/>(Fit r₂)"]
+        G3 -->|Residuals rₘ₋₁| GM["Tree M<br/>(Fit rₘ₋₁)"]
+        WorkersGBT["Workers parallelize histogram bins for ONE active tree at a time"] -.-> G1 & G2 & G3 & GM
+    end
 ```
 
 ---
@@ -415,7 +565,9 @@ We implemented native PySpark Transformer subclasses in `custom_transformers.py`
 #### 6.1 Arrow-Accelerated Haversine Distance (`pandas_udf`)
 Calculates orthodromic great-circle distance between origin and destination coordinates using PyArrow IPC vectorization:
 
-$$d = 2R \arcsin\left(\sqrt{\sin^2\left(\frac{\Delta\phi}{2}\right) + \cos(\phi_1)\cos(\phi_2)\sin^2\left(\frac{\Delta\lambda}{2}\right)}\right)$$
+$$
+d = 2R \arcsin\left(\sqrt{\sin^2\left(\frac{\Delta\phi}{2}\right) + \cos(\phi_1)\cos(\phi_2)\sin^2\left(\frac{\Delta\lambda}{2}\right)}\right)
+$$
 
 ```python
 # custom_transformers.py: Vectorized Haversine UDF via PyArrow
@@ -466,7 +618,9 @@ def _transform(self, dataset: DataFrame) -> DataFrame:
 #### 6.3 `TargetEncoder` (Leakage-Safe Categorical Target Encoding)
 Implemented as an `Estimator` / `Model` pair (`TargetEncoder` and `TargetEncoderModel`). Computes smoothed posterior target expectations per categorical level strictly within training splits, using empirical Bayes smoothing:
 
-$$\hat{S}_c = \frac{n_c \cdot \bar{y}_c + m \cdot \bar{y}_{\text{global}}}{n_c + m}$$
+$$
+\hat{S}_c = \frac{n_c \cdot \bar{y}_c + m \cdot \bar{y}_{\text{global}}}{n_c + m}
+$$
 
 This guarantees that validation and test targets never leak into category representations while providing stabilized priors for low-frequency airline and airport categories.
 
