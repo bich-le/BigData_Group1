@@ -87,13 +87,15 @@
   ],
   "pca_plot": "docs\\assets\\pca_variance.png",
   "mlflow": {
-    "run_id": "a3b39608fb2e4efa90ba3f322587124e"
+    "run_id": "f8a471b2996246ff9bda929853f5cf0f",
+    "preprocessing_model_logged": true,
+    "model_artifact_path": "preprocessing_pipeline"
   },
   "smoke_test": "PASS",
   "synthetic_rows": 160,
   "kien_features": true,
-  "elapsed_seconds": 111.3,
-  "process_rss_mb": 301.11,
+  "elapsed_seconds": 134.034,
+  "process_rss_mb": 299.31,
   "spark_master": "local[2]",
   "spark_version": "3.5.9"
 }

@@ -17,6 +17,7 @@ from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
 sys.path.insert(0, ".")  # cho phép import custom_transformers từ project root
+from mllib_pipeline import configure_local_filesystem, configure_pyspark_python
 from custom_transformers import (
     OutlierIQRTruncator,
     TargetEncoder,
@@ -29,17 +30,13 @@ from custom_transformers import (
 
 @pytest.fixture(scope="module")
 def spark():
-    import os
-
-    os.environ["PYSPARK_PYTHON"] = sys.executable
-    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
-    spark = (
+    configure_pyspark_python()
+    spark = configure_local_filesystem(
         SparkSession.builder.master("local[2]")
         .appName("test_custom_transformers")
         .config("spark.pyspark.python", sys.executable)
         .config("spark.pyspark.driver.python", sys.executable)
-        .getOrCreate()
-    )
+    ).getOrCreate()
     yield spark
     spark.stop()
 

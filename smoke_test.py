@@ -13,6 +13,8 @@ from pyspark.sql import SparkSession
 
 from mllib_pipeline import (
     PipelineConfig,
+    configure_local_filesystem,
+    configure_pyspark_python,
     fit_preprocessing,
     kien_pipeline_config,
     prepare_eligible_flights,
@@ -73,11 +75,10 @@ def main() -> None:
     process = psutil.Process(os.getpid())
     started = time.perf_counter()
 
-    spark = (
-        SparkSession.builder.master("local[2]")
-        .appName("preprocessing-smoke-test")
-        .getOrCreate()
-    )
+    configure_pyspark_python()
+    spark = configure_local_filesystem(
+        SparkSession.builder.master("local[2]").appName("preprocessing-smoke-test")
+    ).getOrCreate()
     try:
         columns = [
             "YEAR",

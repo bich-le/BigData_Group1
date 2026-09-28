@@ -101,7 +101,7 @@ cách cắt cửa sổ theo epoch-seconds với `rangeBetween(-lookback_seconds,
 | Tên biến | Ý nghĩa | Cách xử lý | Dùng model? | Lý do |
 |---|---|---|---|---|
 | `scheduled_hour` | Giờ trong ngày (0-23) | Trích từ `SCHEDULED_DEPARTURE`, xử lý `"2400"` → giờ 0 | ✅ Yes | Bắt pattern giờ cao điểm |
-| `route_congestion_count` | Số chuyến cùng sân bay/ngày/giờ | `groupBy` + join ngược | ✅ Yes | Lịch bay, không phải outcome — an toàn (⚠️ thiếu `YEAR`, xem mục 1) |
+| `route_congestion_count` | Số chuyến cùng sân bay/năm/tháng/ngày/giờ | `groupBy` + join ngược, gồm `YEAR` | ✅ Yes | Lịch bay, không phải outcome — an toàn; không gộp nhầm cùng ngày-tháng ở các năm khác nhau |
 
 ---
 
@@ -186,9 +186,9 @@ Circle Mapper), patch trong `MANUAL_AIRPORT_COORDS` (`custom_transformers.py`).
 
 | # | Việc | Trạng thái |
 |---|---|---|
-| 1 | Báo Bích cập nhật `data_dictionary.md` gốc theo Phương án A | ⏳ Chưa làm |
+| 1 | Đồng bộ `data_dictionary.md` theo Phương án A | ✅ Đã đồng bộ |
 | 2 | `FLIGHT_NUMBER` — chưa đánh giá kỹ có nên giữ/encode thế nào | ⏳ Chưa làm |
-| 3 | Sửa `route_congestion_count` thiếu `YEAR` trong group key | ⏳ Chưa làm |
+| 3 | Sửa `route_congestion_count` thiếu `YEAR` trong group key | ✅ Đã sửa trong `feature_integration.py` |
 | 4 | `flight_departure_delay_vs_airline_avg_rt7d` — tỷ lệ 2 số có thể âm, cân nhắc đổi sang hiệu số | ⏳ Chưa làm |
 | 5 | Ngưỡng "late" = `ARRIVAL_DELAY > 30` | ✅ Đã chốt |
 | 6 | Hỗ trợ nhiều cửa sổ lookback (1/3/7 ngày) cùng lúc | ✅ Đã sửa |

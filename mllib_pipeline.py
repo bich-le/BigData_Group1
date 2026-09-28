@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -24,6 +27,60 @@ from pyspark.sql import DataFrame, SparkSession, functions as F
 
 
 PipelineStage = Estimator | Transformer
+_BARE_LOCAL_FS_CLASS = "com.globalmentor.apache.hadoop.fs.BareLocalFileSystem"
+_BARE_LOCAL_FS_JAR = (
+    Path(__file__).resolve().parent
+    / "vendor"
+    / "hadoop-bare-naked-local-fs-0.1.0.jar"
+)
+
+
+def configure_pyspark_python() -> None:
+    """Use the interpreter that launched this script for local Windows workers.
+
+    Spark otherwise falls back to a Unix-style ``python3`` executable on some
+    Windows installations.  Pandas UDF stages then fail before any pipeline
+    code runs.  Keeping an explicitly configured non-Windows environment
+    untouched preserves cluster/WSL configuration.
+    """
+
+    if sys.platform.startswith("win"):
+        os.environ["PYSPARK_PYTHON"] = sys.executable
+        os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+
+
+def _mlflow_spark_temp_uri() -> str:
+    """Return a writable local URI for Spark's temporary model save.
+
+    MLflow Spark defaults to ``file:/tmp/mlflow``.  That Unix-style location
+    frequently fails under Hadoop's Windows local filesystem implementation,
+    even when the MLflow tracking directory itself is writable.
+    """
+
+    temporary_dir = Path(tempfile.gettempdir()) / "bigdata-group1-mlflow-spark"
+    temporary_dir.mkdir(parents=True, exist_ok=True)
+    return temporary_dir.resolve().as_uri()
+
+
+def configure_local_filesystem(builder):
+    """Configure local Windows Spark to persist files without ``winutils.exe``.
+
+    The vendored GlobalMentor JAR replaces Hadoop's Windows-only
+    ``RawLocalFileSystem`` with a pure Java implementation.  It is enabled
+    only when present, so Linux, WSL, and cluster deployments retain their
+    normal filesystem behavior.
+    """
+
+    if not _BARE_LOCAL_FS_JAR.is_file():
+        return builder
+    jar = str(_BARE_LOCAL_FS_JAR)
+    return (
+        builder.config("spark.jars", jar)
+        .config("spark.driver.extraClassPath", jar)
+        .config("spark.executor.extraClassPath", jar)
+        .config("spark.hadoop.fs.file.impl", _BARE_LOCAL_FS_CLASS)
+        .config("spark.hadoop.fs.file.impl.disable.cache", "true")
+    )
 
 
 @dataclass(frozen=True)
@@ -284,17 +341,25 @@ def save_pca_variance_plot(
 
 
 def log_preprocessing_run(
+    model: PipelineModel,
     config: PipelineConfig,
     train_rows: int,
     test_rows: int,
     variances: Sequence[float],
     plot_path: Path,
     experiment_name: str,
-) -> dict[str, str]:
-    """Log preprocessing parameters, metrics, and artifacts to MLflow."""
+) -> dict[str, object]:
+    """Log E22 evidence, including the fitted preprocessing ``PipelineModel``.
+
+    E22 is not considered complete merely because a run has parameters and
+    metrics.  The fitted Spark model must also be persisted as an MLflow
+    artifact so Huy can append an estimator reproducibly and Hong Anh can load
+    the same preprocessing logic at inference time.
+    """
 
     try:
         import mlflow
+        import mlflow.spark
     except ImportError as exc:
         raise RuntimeError("MLflow is not installed") from exc
 
@@ -321,7 +386,41 @@ def log_preprocessing_run(
         mlflow.log_metrics(metrics)
         mlflow.log_artifact(str(plot_path), artifact_path="plots")
         mlflow.log_dict(asdict(config), "config/pipeline_config.json")
-        return {"run_id": run.info.run_id}
+        try:
+            mlflow.spark.log_model(
+                model,
+                artifact_path="preprocessing_pipeline",
+                dfs_tmpdir=_mlflow_spark_temp_uri(),
+            )
+        except Exception as exc:
+            # Do not silently claim E22 passed when the model itself was not
+            # persisted.  Keep a diagnostic inside the run, then fail clearly.
+            message = f"{type(exc).__name__}: {exc}"
+            mlflow.log_text(message, "diagnostics/model_persistence_error.txt")
+            raise RuntimeError(
+                "E22 is incomplete: MLflow could not persist the fitted "
+                "preprocessing PipelineModel. See diagnostics/model_persistence_error.txt."
+            ) from exc
+
+        mlflow.set_tag("preprocessing_model_log_status", "logged")
+        mlflow.log_dict(
+            {
+                "criterion": "E22 — MLflow params, metrics, PCA plot, config, and model artifact",
+                "run_id": run.info.run_id,
+                "preprocessing_model_logged": True,
+                "artifact_paths": [
+                    "plots/pca_variance.png",
+                    "config/pipeline_config.json",
+                    "preprocessing_pipeline/",
+                ],
+            },
+            "verification/e22_mlflow_manifest.json",
+        )
+        return {
+            "run_id": run.info.run_id,
+            "preprocessing_model_logged": True,
+            "model_artifact_path": "preprocessing_pipeline",
+        }
 
 
 def fit_preprocessing(
@@ -376,6 +475,7 @@ def fit_preprocessing(
 
     if mlflow_experiment:
         summary["mlflow"] = log_preprocessing_run(
+            model,
             config,
             train_rows,
             test_rows,
@@ -422,7 +522,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    spark = SparkSession.builder.appName("flight-preprocessing-pca").getOrCreate()
+    configure_pyspark_python()
+    spark = configure_local_filesystem(
+        SparkSession.builder.appName("flight-preprocessing-pca")
+    ).getOrCreate()
     try:
         flights = spark.read.parquet(args.input)
         stages: list[PipelineStage] = []

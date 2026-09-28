@@ -87,6 +87,8 @@
   ],
   "pca_plot": "docs\\assets\\pca_variance.png",
   "mlflow": {
-    "run_id": "a3b39608fb2e4efa90ba3f322587124e"
+    "run_id": "f8a471b2996246ff9bda929853f5cf0f",
+    "preprocessing_model_logged": true,
+    "model_artifact_path": "preprocessing_pipeline"
   }
 }

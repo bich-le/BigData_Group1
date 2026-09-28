@@ -2,13 +2,15 @@
 
 Dictionary mô tả **typed raw schema** được tạo bởi `scripts/prepare_data.py`.
 
-Inference contract hiện tại: model dự đoán **trước khi chuyến bay thực sự khởi hành**.
+Inference contract đã chốt: model dự đoán **ngay sau khi máy bay rời cổng,
+trước khi taxi-out hoàn tất**. Vì vậy `DEPARTURE_DELAY` đã biết tại thời điểm
+dự đoán và có thể được dùng; các trường từ `TAXI_OUT` trở đi vẫn là leakage.
 
 > `Candidate feature` chỉ là đánh giá sơ bộ. Feature set cuối cùng thuộc module Feature/Pipeline.
 
 ## Flights
 
-| Column | Type | Meaning | Role / status | Pre-departure? | Notes |
+| Column | Type | Meaning | Role / status | Available at prediction time? | Notes |
 |---|---|---|---|---|---|
 | `YEAR` | integer | Năm thực hiện chuyến bay | Candidate feature | Yes | Dataset hiện tại chỉ có năm 2015 |
 | `MONTH` | integer | Tháng thực hiện chuyến bay | Candidate feature / partition key | Yes | Domain 1–12; flights Parquet partition theo cột này |
@@ -20,8 +22,8 @@ Inference contract hiện tại: model dự đoán **trước khi chuyến bay t
 | `ORIGIN_AIRPORT` | string | Mã sân bay khởi hành | Candidate feature | Yes | Có IATA 3 ký tự và DOT numeric 5 chữ số |
 | `DESTINATION_AIRPORT` | string | Mã sân bay đến | Candidate feature | Yes | Có IATA 3 ký tự và DOT numeric 5 chữ số |
 | `SCHEDULED_DEPARTURE` | string | Giờ khởi hành theo lịch, dạng HHMM | Candidate feature | Yes | `2400` được xem là convention hợp lệ |
-| `DEPARTURE_TIME` | string | Giờ khởi hành thực tế, dạng HHMM | Leakage | No | Chỉ biết sau khi chuyến bay bắt đầu khởi hành |
-| `DEPARTURE_DELAY` | integer | Số phút chênh lệch giữa giờ khởi hành thực tế và giờ theo lịch | Leakage | No | Giá trị dương = trễ; giá trị âm = khởi hành sớm |
+| `DEPARTURE_TIME` | string | Giờ khởi hành thực tế, dạng HHMM | Không chọn làm feature | No | Không cần cho feature set hiện tại; không dùng để tránh đưa actual timestamp dư thừa vào model |
+| `DEPARTURE_DELAY` | integer | Số phút chênh lệch giữa giờ khởi hành thực tế và giờ theo lịch | Candidate feature | Yes | Đã biết ngay sau rời cổng theo inference contract; giá trị dương = trễ, âm = khởi hành sớm |
 | `TAXI_OUT` | integer | Số phút từ lúc rời cổng đến lúc cất cánh | Leakage | No | Post-departure |
 | `WHEELS_OFF` | string | Thời điểm máy bay rời mặt đất, dạng HHMM | Leakage | No | Actual time |
 | `SCHEDULED_TIME` | integer | Tổng thời lượng chuyến bay theo lịch, tính bằng phút | Candidate feature | Yes | Không phải elapsed time thực tế |
