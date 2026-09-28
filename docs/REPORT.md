@@ -131,7 +131,7 @@ For a vector of dimension $p$ containing $k \ll p$ non-zero elements, storage co
 
 | Mode / State | Materialized Vector Representation | Active Storage per Record | Distributed Heap Impact |
 | :--- | :--- | :--- | :--- |
-| **Initial `SparseVector`** | `[1: 12.0, 4: 24.0]` | $k$ entries ($\mathcal{O}(k)$) | Minimal footprint; zeroes unallocated |
+| **Initial `SparseVector`** | `[1: 12.0, 4: 24.0]` | $k$ entries ($\mathcal{O}(k)$ ) | Minimal footprint; zeroes unallocated |
 | **`withMean=True`** | `[-μ, 12.0-μ, -μ, -μ, 24.0-μ, -μ]` | $p$ entries ($\mathcal{O}(p)$ - **Dense**) | Severe memory explosion; GC thrashing & OOM |
 | **`withStd=True`** | `[1: 12.0/σ, 4: 24.0/σ]` | $k$ entries ($\mathcal{O}(k)$ - **Sparse**) | Zero coordinates untouched; memory preserved |
 
@@ -201,7 +201,7 @@ $$
 \frac{d}{dx}\ln(1 + x) = \frac{1}{1 + x}
 $$
 
-As $x \to \infty$, the marginal change $\frac{1}{1+x} \to 0$. Large absolute differences in extreme delay values are nonlinearly compressed into compact intervals, dampening the leverage of extreme outliers while strictly guaranteeing that $x'_{ij} = 0$ when $x_{ij} = 0$.
+As $x \to \infty$, the marginal change $\frac{1}{1+x} \to 0$. Large absolute differences in extreme delay values are nonlinearly compressed into compact intervals, dampening the leverage of extreme outliers while strictly guaranteeing that $x_{ij}^{'} = 0$ when $x_{ij} = 0$.
 
 Standardized z-scores are subsequently computed on the log-transformed variables:
 
@@ -356,8 +356,21 @@ $$
 When features exhibit strong multicollinearity (e.g., flight scheduled elapsed time vs. route distance), OLS coefficient estimates suffer from severe variance inflation.
 
 To stabilize estimation:
-* **Ridge Regularization ($L_2$)** adds penalty $\frac{1}{2}\|\boldsymbol{\beta}\|_2^2 = \frac{1}{2}\sum_{j=1}^p \beta_j^2$. It shrinks coefficients smoothly, improving condition numbers of correlated predictors, but cannot produce sparse solutions (coefficients never reach exactly zero).
-* **Lasso Regularization ($L_1$)** adds penalty $\|\boldsymbol{\beta}\|_1 = \sum_{j=1}^p |\beta_j|$. It drives non-informative coefficients exactly to zero, performing automated feature selection. However, with highly collinear predictors, Lasso arbitrarily selects one variable and discards the rest.
+* **Ridge Regularization ($L_2$)** adds penalty
+
+$$
+\frac{1}{2}\|\boldsymbol{\beta}\|^{2}_{2} = \frac{1}{2}\sum^p_{j=1} \beta_j^2
+$$
+
+It shrinks coefficients smoothly, improving condition numbers of correlated predictors, but cannot produce sparse solutions (coefficients never reach exactly zero).
+
+* **Lasso Regularization ($L_1$)** adds penalty
+$$
+\|\boldsymbol{\beta}\|_1 = \sum_{j=1}^p |\beta_j|
+$$
+
+It drives non-informative coefficients exactly to zero, performing automated feature selection. However, with highly collinear predictors, Lasso arbitrarily selects one variable and discards the rest.
+
 
 **ElasticNet** resolves this trade-off by combining both penalties into a unified objective:
 
@@ -388,13 +401,19 @@ $$
 | **Binomial**          | Probabilities ($[0, 1]$)                    | **Logit:** $g(\mu) = \ln\left(\frac{\mu}{1 - \mu}\right)$ | $\mu = \frac{1}{1 + e^{-\mathbf{x}^T\boldsymbol{\beta}}}$ | **Odds ratio:** Odds $\frac{\mu}{1-\mu}$ multiply by $e^{\beta_j}$. S-curve probability bounds. |
 | **Gamma**             | Positive continuous skewed ($\mathbb{R}^+$) | **Inverse:** $g(\mu) = \frac{1}{\mu}$                     | $\mu = \frac{1}{\mathbf{x}^T\boldsymbol{\beta}}$          | Non-linear inverse rate. (Requires $\mathbf{x}^T\boldsymbol{\beta} > 0$).                       |
 
-*Practical Note on Gamma Link Function:* While $g(\mu) = 1/\mu$ is canonical, in practice the **log link** ($g(\mu) = \ln(\mu) \implies \mu = \exp(\mathbf{x}^T\boldsymbol{\beta})$) is preferred for flight delay durations because it guarantees that predicted delays remain strictly positive without risking division-by-zero or negative mean violations.
+*Practical Note on Gamma Link Function:* While $g(\mu) = 1/\mu$ is canonical, in practice the **log link**
+
+$$
+g(\mu) = \ln(\mu) \implies \mu = \exp(\mathbf{x}^T\boldsymbol{\beta})
+$$
+
+is preferred for flight delay durations because it guarantees that predicted delays remain strictly positive without risking division-by-zero or negative mean violations.
 
 ---
 
 #### 4.2 Linear Support Vector Classifier (LinearSVC) and Soft-Margin Hinge Loss
 
-Given binary classification observations $\{(\mathbf{x}_i, y_i)\}_{i=1}^n$ with labels $y_i \in \{-1, +1\}$, LinearSVC constructs an optimal separating hyperplane:
+Given binary classification observations $\{(\mathbf{x}\_i, y\_i)\}\_{i=1}^n$ with labels $y\_i \in \{-1, +1\}$, LinearSVC constructs an optimal separating hyperplane:
 
 $$
 \mathbf{w}^T\mathbf{x} - b = 0
@@ -470,7 +489,7 @@ Tree ensemble methods address the high-variance tendency of individual deep deci
 Random Forest builds an ensemble of $B$ independent decision trees $\{T_1, \dots, T_B\}$:
 * **Bagging (Bootstrap Aggregation):** Each tree $T_b$ is trained on an independent bootstrap sample $\mathcal{D}_b$ drawn uniformly with replacement from training dataset $\mathcal{D}$.
 * **Prediction Aggregation:**
-  * Classification: Majority voting $\hat{C}(\mathbf{x}) = \text{mode}\left(\{\hat{C}_b(\mathbf{x})\}_{b=1}^B\right)$.
+  * Classification: Majority voting $\hat{C}(\mathbf{x}) = \text{mode}\left(\{\hat{C}\_b(\mathbf{x})\}\_{b=1}^B\right)$.
   * Regression: Ensemble averaging $\hat{f}(\mathbf{x}) = \frac{1}{B}\sum_{b=1}^B \hat{f}_b(\mathbf{x})$.
 
 * **Variance Reduction Mathematics:**
