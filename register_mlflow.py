@@ -146,9 +146,13 @@ def main():
             if version.run_id == run_id
         ]
         if not versions:
-            raise RuntimeError("MLflow logging succeeded but no registered version matched the run")
+            raise RuntimeError(
+                "MLflow logging succeeded but no registered version matched the run"
+            )
         version = max(versions, key=lambda item: int(item.version))
-        client.set_model_version_tag(registered_name, version.version, "validation.status", "passed")
+        client.set_model_version_tag(
+            registered_name, version.version, "validation.status", "passed"
+        )
         client.set_registered_model_alias(registered_name, "champion", version.version)
         print(f"MLflow run: {run_id}")
         print(f"Registered model: {registered_name} version {version.version}")
