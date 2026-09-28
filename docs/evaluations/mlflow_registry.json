@@ -54,9 +54,9 @@
     "tags": {
       "deployment.input": "pre-engineered-23-feature-json",
       "evaluation.oot_source": "local-held-out",
-      "model.origin": "teammate-confirmed-full-80pct-candidate",
+      "model.origin": "production-candidate-80pct",
       "validation.oot_rows": "932084",
-      "validation.source": "teammate-confirmed-common-20pct",
+      "validation.source": "standardized-common-20pct-validation",
       "validation.status": "passed"
     }
   }

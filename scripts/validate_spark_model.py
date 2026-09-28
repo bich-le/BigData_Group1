@@ -12,10 +12,14 @@ from pyspark.ml.functions import vector_to_array
 from pyspark.ml.regression import RandomForestRegressionModel
 from pyspark.sql import SparkSession, functions as F
 
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from feature_contract import FEATURES_BY_TASK
 
-
-ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
 DEFAULT_MODELS = {
     "classification": ROOT / "models/random_forest_final_spark",

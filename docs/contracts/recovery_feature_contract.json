@@ -1,6 +1,6 @@
 {
   "source": "sfdws_model_spark.py exact Spark feature-selection functions",
-  "dataset": "../huy/model-ready/base",
+  "dataset": "data/model-ready/base",
   "verification_runs": 2,
   "training_rows": 3739905,
   "class_counts": {"0.0": 3331853, "1.0": 408052},

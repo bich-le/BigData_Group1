@@ -18,16 +18,16 @@ No target or outcome field is required for inference.
 
 Task-specific examples:
 
-- `docs/sample_classification_stream_input.json`;
-- `docs/sample_regression_stream_input.json`.
+- `docs/contracts/sample_classification_stream_input.json`;
+- `docs/contracts/sample_regression_stream_input.json`.
 
 ## Regression selection and final evaluation
 
 Depth-18 configurations were skipped because their Spark MLlib tree growth was
 computationally infeasible on the available machine. CV fold counts differed, so
 the global winner was selected by RMSE on the common random 20% pre-OOT
-validation split (seed 42). The teammate confirmed that the supplied artifact is the exact winner fitted on the full 80% training split. A local `randomSplit` reconstruction produced different row membership, so the teammate metrics remain the authoritative validation record. OOT was reserved for final evaluation. See
-`docs/REGRESSION_RESULTS.md`, `docs/regression_selection.json`, and `docs/regression_evaluation.json`.
+validation split (seed 42). Standardized validation benchmarks confirmed that the supplied artifact is the exact winner fitted on the full 80% training split. A local `randomSplit` reconstruction produced different row membership, so the standardized benchmark metrics remain the authoritative validation record. OOT was reserved for final evaluation. See
+`docs/evaluations/REGRESSION_RESULTS.md`, `docs/evaluations/regression_selection.json`, and `docs/evaluations/regression_evaluation.json`.
 
 Winner: 500 trees, depth 15, minimum 5 instances per node.
 

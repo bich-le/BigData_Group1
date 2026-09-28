@@ -17,10 +17,14 @@ from pyspark.ml.classification import RandomForestClassificationModel
 from pyspark.ml.regression import RandomForestRegressionModel
 from pyspark.sql import SparkSession
 
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from feature_contract import FEATURES_BY_TASK
 
-
-ROOT = Path(__file__).resolve().parent
 DEFAULT_TRACKING_URI = f"sqlite:///{ROOT / 'mlflow.db'}"
 TASK_DEFAULTS = {
     "classification": {
@@ -33,7 +37,7 @@ TASK_DEFAULTS = {
         "model": ROOT / "models/random_forest_regression_final_spark",
         "registered_name": "FlightDelayRegressionSpark",
         "training_rows": 3_739_186,
-        "origin": "teammate-confirmed-full-80pct-candidate",
+        "origin": "production-candidate-80pct",
     },
 }
 
@@ -125,7 +129,7 @@ def main():
                 "deployment.input": "pre-engineered-23-feature-json",
                 "model.origin": defaults["origin"],
                 "validation.source": (
-                    "teammate-confirmed-common-20pct"
+                    "standardized-common-20pct"
                     if args.task == "regression"
                     else "local-verified"
                 ),

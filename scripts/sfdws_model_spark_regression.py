@@ -31,8 +31,12 @@ os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 from pyspark.sql import SparkSession, Window, functions as F
 
-ROOT = Path(__file__).resolve().parent
-DEFAULT_DATA_PATH = ROOT.parent / "huy/model-ready/base"
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATA_PATH = (
+    ROOT / "data/model-ready/base"
+    if (ROOT / "data/model-ready/base").exists()
+    else ROOT.parent / "huy/model-ready/base"
+)
 DEFAULT_MODEL_PATH = ROOT / "models/random_forest_regression_final_spark"
 
 # Honour spark-submit runtime settings such as --master and --driver-memory.
@@ -926,7 +930,7 @@ def run_pipeline(
         )
         return None, None, df_feature_corr, df_corr, None
 
-    # Huy-confirmed full grid: 12 combinations, each evaluated by 3-fold CV.
+    # Full grid: 12 combinations, each evaluated by 3-fold CV.
     df_hyperparams_opts = grid_search_cv_model(
         X_train,
         y_train,
