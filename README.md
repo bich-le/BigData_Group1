@@ -90,6 +90,9 @@ pip install -r requirements.txt
 
 ## Instructor Demonstration
 
+MLflow tournament UI demo and the exact limits of the checked-in evidence:
+[`docs/evidence/MLFLOW_DEMO.md`](docs/evidence/MLFLOW_DEMO.md).
+
 The project provides an automated demo runner (`submit_pipeline.sh`) that reloads serialized models in a fresh process, validates a small out-of-time (OOT) holdout sample, and executes one real Spark Structured Streaming microbatch:
 
 ```bash
