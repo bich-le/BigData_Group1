@@ -14,7 +14,7 @@
 
 Mở file `MO_DEMO_MLFLOW.command` ở thư mục gốc bằng cách nháy đúp. File sẽ dùng môi trường Python đã chuẩn bị trên máy này, tạo dữ liệu demo nếu chưa có, bật MLflow và mở trình duyệt tại `http://127.0.0.1:5000`. Giữ cửa sổ Terminal hiện ra trong lúc thuyết trình. Nếu tải file trực tiếp từ GitHub và macOS không cho nháy đúp, mở Terminal trong thư mục project rồi chạy `zsh MO_DEMO_MLFLOW.command`.
 
-Trong UI: chọn **Model training** → `FlightDelay-Tournament-Reported` → **Runs**. Mở `classification tournament (reported)` hoặc `regression tournament (reported)`, rồi chọn **Metrics**, **Params** và **Artifacts**. Ở Artifacts có `plots/pca_variance.png` và biểu đồ so sánh tournament. Mở run con `Random Forest` để chỉ vào các metrics của một candidate. Có thể nói: “MLflow lưu tham số, số đo và biểu đồ để nhóm so sánh mô hình; màn hình này tái hiện các kết quả đã được nhóm báo cáo.”
+Trong UI: chọn **Model training** → `FlightDelay-Tournament-Reported` → **Runs**. Mở `classification tournament (reported)` hoặc `regression tournament (reported)`. Ở tab **Overview**, chỉ vào hai bảng **Metrics** và **Parameters**. Sau đó chọn tab **Artifacts** → thư mục `plots` để mở `pca_variance.png` và biểu đồ so sánh tournament. Trong **Overview**, phần **Child runs** có run `regression: Random Forest` để xem metrics của một candidate. Có thể nói: “MLflow lưu tham số, số đo và biểu đồ để nhóm so sánh mô hình; màn hình này tái hiện các kết quả đã được nhóm báo cáo.”
 
 **Không giới thiệu run demo này như một lần train model mới**, và không nhận run cũ `f8a471b2996246ff9bda929853f5cf0f` là đã được kiểm chứng trên máy này.
 
