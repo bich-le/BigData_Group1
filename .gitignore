@@ -43,3 +43,21 @@ checkpoint/
 # Logs
 *.log
 logs/
+
+# Generated datasets
+data/raw/
+data/typed-parquet/
+data/model-ready/
+
+# Python
+__pycache__/
+*.pyc
+
+# Model artifacts
+*.pkl
+*.joblib
+*.pt
+
+# Spark
+spark-warehouse/
+metastore_db/
