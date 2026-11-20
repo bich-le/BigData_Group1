@@ -1,0 +1,52 @@
+{
+  "provenance": "Transcribed from the regression tournament table in docs/REPORT.md, section 8.2 and scripts/benchmark_results.py; these are reported summary values, not a new training run.",
+  "selection_metric": "oot_rmse",
+  "candidates": [
+    {
+      "algorithm": "Random Forest",
+      "verdict": "champion",
+      "metrics": {
+        "train_r2": 0.3535,
+        "train_rmse": 31.04,
+        "validation_r2": 0.2773,
+        "validation_rmse": 32.92,
+        "oot_r2": 0.2678,
+        "oot_rmse": 35.05,
+        "oot_mae": 17.10
+      }
+    },
+    {
+      "algorithm": "Gradient Boosting",
+      "verdict": "candidate",
+      "metrics": {
+        "train_r2": 0.3218,
+        "validation_r2": 0.2431,
+        "oot_r2": 0.2347,
+        "oot_rmse": 35.82,
+        "oot_mae": 17.54
+      }
+    },
+    {
+      "algorithm": "Linear Regression",
+      "verdict": "candidate",
+      "metrics": {
+        "train_r2": 0.2467,
+        "validation_r2": 0.2112,
+        "oot_r2": 0.2036,
+        "oot_rmse": 36.58,
+        "oot_mae": 18.29
+      }
+    },
+    {
+      "algorithm": "GLM (Gamma/Poisson)",
+      "verdict": "candidate",
+      "metrics": {
+        "train_r2": 0.2294,
+        "validation_r2": 0.1976,
+        "oot_r2": 0.1891,
+        "oot_rmse": 36.91,
+        "oot_mae": 18.57
+      }
+    }
+  ]
+}

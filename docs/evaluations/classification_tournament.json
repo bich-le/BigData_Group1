@@ -1,0 +1,48 @@
+{
+  "provenance": "Transcribed from the classification tournament table in docs/REPORT.md, section 8.1; these are reported results, not a new training run.",
+  "selection_metric": "oot_gini",
+  "candidates": [
+    {
+      "algorithm": "Random Forest",
+      "verdict": "champion",
+      "metrics": {
+        "train_gini": 0.7520,
+        "train_ks": 0.5910,
+        "validation_gini": 0.6757,
+        "validation_ks": 0.5256,
+        "oot_gini": 0.6762,
+        "oot_ks": 0.5245,
+        "oot_precision": 0.6076,
+        "oot_recall": 0.4821
+      }
+    },
+    {
+      "algorithm": "Gradient Boosting",
+      "verdict": "candidate",
+      "metrics": {
+        "train_gini": 0.8276,
+        "train_ks": 0.6543,
+        "validation_gini": 0.6124,
+        "validation_ks": 0.4726,
+        "oot_gini": 0.6071,
+        "oot_ks": 0.4683,
+        "oot_precision": 0.5602,
+        "oot_recall": 0.4431
+      }
+    },
+    {
+      "algorithm": "Linear SVC",
+      "verdict": "candidate",
+      "metrics": {
+        "train_gini": 0.5837,
+        "train_ks": 0.4316,
+        "validation_gini": 0.5126,
+        "validation_ks": 0.3794,
+        "oot_gini": 0.4983,
+        "oot_ks": 0.3681,
+        "oot_precision": 0.5136,
+        "oot_recall": 0.3925
+      }
+    }
+  ]
+}
