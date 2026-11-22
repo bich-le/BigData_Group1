@@ -1,0 +1,18 @@
+[
+  {
+    "name": "FlightDelayFullPipelineClassification",
+    "production_alias_version": "1",
+    "run_id": "3578cf12258c4b3dacf417f038a84aa6",
+    "tags": {
+      "pipeline_scope": "raw-input-full-pipeline"
+    }
+  },
+  {
+    "name": "FlightDelayFullPipelineRegression",
+    "production_alias_version": "1",
+    "run_id": "57104eb4c4244f1da765368105d369bb",
+    "tags": {
+      "pipeline_scope": "raw-input-full-pipeline"
+    }
+  }
+]

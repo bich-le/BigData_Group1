@@ -49,7 +49,7 @@ Winner: 500 trees, depth 15, minimum 5 instances per node.
 The local tracking database is `mlflow.db`; artifacts are in `mlruns/`. Both are
 runtime state excluded from Git.
 
-## Instructor Demo
+## Pipeline Demo
 
 The demo reloads an existing artifact, scores a small OOT subset in a fresh
 process, then executes one `spark.readStream` JSON microbatch. It does not train.
@@ -95,5 +95,5 @@ checkpoint directories must differ.
 - MLflow 3.10.1
 - PyArrow 23.0.1
 
-Instructor demos use 32 GB driver memory and `spark.driver.maxResultSize=4g` for
+Pipeline demos use 32 GB driver memory and `spark.driver.maxResultSize=4g` for
 the large regression forest. Model fitting is not part of the demo.

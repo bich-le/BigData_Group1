@@ -8,23 +8,48 @@ case "$TASK" in
 esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DRIVER_MEMORY="${DRIVER_MEMORY:-32g}"
-INPUT_DIR="/tmp/flight-${TASK}-input"
-OUTPUT_DIR="/tmp/flight-${TASK}-output"
-CHECKPOINT_DIR="/tmp/flight-${TASK}-checkpoint"
+DRIVER_MEMORY="${DRIVER_MEMORY:-4g}"
+MODEL_DIR="${MODEL_DIR:-$ROOT/models/${TASK}_full_pipeline}"
+SPARK_SUBMIT="$(command -v spark-submit || true)"
+PYSPARK_RUNTIME_PYTHON="${PYSPARK_PYTHON:-}"
+if [[ -z "$SPARK_SUBMIT" ]]; then
+  for python_bin in "${VIRTUAL_ENV:-}/bin/python" "$ROOT/.venv/bin/python" "$ROOT/../.venv/bin/python"; do
+    [[ -x "$python_bin" ]] || continue
+    candidate="$("$python_bin" -c 'import os, pyspark; print(os.path.join(os.path.dirname(pyspark.__file__), "bin", "spark-submit"))' 2>/dev/null || true)"
+    if [[ -x "$candidate" ]]; then
+      SPARK_SUBMIT="$candidate"
+      PYSPARK_RUNTIME_PYTHON="$python_bin"
+      break
+    fi
+  done
+fi
+if [[ -z "$SPARK_SUBMIT" ]]; then
+  echo "spark-submit was not found on PATH or in the project virtual environment." >&2
+  exit 1
+fi
+if [[ -n "$PYSPARK_RUNTIME_PYTHON" ]]; then
+  export PYSPARK_PYTHON="$PYSPARK_RUNTIME_PYTHON"
+fi
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/flight-${TASK}-XXXXXX")"
+INPUT_DIR="$RUN_DIR/input"
+OUTPUT_DIR="$RUN_DIR/output"
+CHECKPOINT_DIR="$RUN_DIR/checkpoint"
+trap 'rm -rf "$RUN_DIR"' EXIT
 
-rm -rf "$INPUT_DIR" "$OUTPUT_DIR" "$CHECKPOINT_DIR"
+if [[ ! -d "$MODEL_DIR" ]]; then
+  echo "Missing full PipelineModel: $MODEL_DIR" >&2
+  echo "Train one first with scripts/train_tournament.py; existing legacy two-stage artifacts are intentionally rejected." >&2
+  exit 1
+fi
 mkdir -p "$INPUT_DIR"
 cp "$ROOT/docs/contracts/sample_${TASK}_stream_input.json" "$INPUT_DIR/events.json"
 
-spark-submit --master 'local[2]' --driver-memory "$DRIVER_MEMORY" --conf spark.driver.maxResultSize=4g \
-  "$ROOT/scripts/validate_spark_model.py" --task "$TASK"
-
-spark-submit --master 'local[2]' --driver-memory "$DRIVER_MEMORY" --conf spark.driver.maxResultSize=4g \
+"$SPARK_SUBMIT" --master 'local[2]' --driver-memory "$DRIVER_MEMORY" \
   "$ROOT/inference.py" --task "$TASK" \
+  --model "$MODEL_DIR" \
   --input-dir "$INPUT_DIR" \
   --output-dir "$OUTPUT_DIR" \
   --checkpoint-dir "$CHECKPOINT_DIR" \
   --available-now
 
-cat "$OUTPUT_DIR"/*.json
+find "$OUTPUT_DIR" -name '*.json' -type f -exec cat {} +

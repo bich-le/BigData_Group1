@@ -1,0 +1,44 @@
+{
+  "task": "classification",
+  "training_source": "raw archive flights.csv",
+  "training_rows_requested": 25000,
+  "pipeline_stages": [
+    "FlightEligibilityAndLabelTransformer",
+    "ScheduledHourTransformer",
+    "ImputerModel",
+    "StringIndexerModel",
+    "StringIndexerModel",
+    "StringIndexerModel",
+    "OneHotEncoderModel",
+    "VectorAssembler",
+    "StandardScalerModel",
+    "PCAModel",
+    "RandomForestClassificationModel"
+  ],
+  "rf_params": {
+    "numTrees": 300,
+    "maxDepth": 15,
+    "minInstancesPerNode": 5
+  },
+  "save_load": "PipelineModel.load succeeded",
+  "sample_predictions": [
+    {
+      "prediction": 0.0,
+      "probability": "[0.973372220473478,0.02662777952652203]"
+    },
+    {
+      "prediction": 0.0,
+      "probability": "[0.9153320622276455,0.08466793777235444]"
+    },
+    {
+      "prediction": 0.0,
+      "probability": "[0.9571594063984035,0.0428405936015966]"
+    }
+  ],
+  "mlflow_registry": {
+    "name": "FlightDelayFullPipelineClassification",
+    "version": "1",
+    "alias": "production",
+    "run_id": "3578cf12258c4b3dacf417f038a84aa6"
+  }
+}

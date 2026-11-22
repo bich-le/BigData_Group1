@@ -1,0 +1,41 @@
+{
+  "task": "regression",
+  "training_source": "raw archive flights.csv",
+  "training_rows_requested": 25000,
+  "pipeline_stages": [
+    "FlightEligibilityAndLabelTransformer",
+    "ScheduledHourTransformer",
+    "ImputerModel",
+    "StringIndexerModel",
+    "StringIndexerModel",
+    "StringIndexerModel",
+    "OneHotEncoderModel",
+    "VectorAssembler",
+    "StandardScalerModel",
+    "PCAModel",
+    "RandomForestRegressionModel"
+  ],
+  "rf_params": {
+    "numTrees": 500,
+    "maxDepth": 15,
+    "minInstancesPerNode": 5
+  },
+  "save_load": "PipelineModel.load succeeded",
+  "sample_predictions": [
+    {
+      "prediction": 19.470203305900654
+    },
+    {
+      "prediction": -0.572258533532842
+    },
+    {
+      "prediction": -11.18505492442882
+    }
+  ],
+  "mlflow_registry": {
+    "name": "FlightDelayFullPipelineRegression",
+    "version": "1",
+    "alias": "production",
+    "run_id": "57104eb4c4244f1da765368105d369bb"
+  }
+}

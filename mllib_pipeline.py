@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from pyspark.ml import Estimator, Pipeline, PipelineModel, Transformer
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.regression import RandomForestRegressor
 from pyspark.ml.feature import (
     Imputer,
     OneHotEncoder,
@@ -148,6 +150,36 @@ class ScheduledHourTransformer(
         )
 
 
+class FlightEligibilityAndLabelTransformer(
+    Transformer, DefaultParamsReadable, DefaultParamsWritable
+):
+    """Apply training eligibility and derive the classification label.
+
+    It deliberately accepts serving rows without ``ARRIVAL_DELAY``: the
+    fitted pipeline can therefore score raw events with the same model that
+    was trained, while label construction remains part of the training path.
+    """
+
+    regressionLabel = Param(Params._dummy(), "regressionLabel", "Regression label", TypeConverters.toString)
+    classificationLabel = Param(Params._dummy(), "classificationLabel", "Classification label", TypeConverters.toString)
+
+    def __init__(self, regressionLabel: str = "ARRIVAL_DELAY", classificationLabel: str = "severe_delay"):
+        super().__init__()
+        self._setDefault(regressionLabel="ARRIVAL_DELAY", classificationLabel="severe_delay")
+        self._set(regressionLabel=regressionLabel, classificationLabel=classificationLabel)
+
+    def _transform(self, dataset: DataFrame) -> DataFrame:
+        result = dataset
+        if {"CANCELLED", "DIVERTED"}.issubset(result.columns):
+            result = result.filter((F.col("CANCELLED") == 0) & (F.col("DIVERTED") == 0))
+        label = self.getOrDefault(self.regressionLabel)
+        if label in result.columns:
+            result = result.filter(F.col(label).isNotNull()).withColumn(
+                self.getOrDefault(self.classificationLabel), (F.col(label) > F.lit(30)).cast("double")
+            )
+        return result
+
+
 def _require_columns(df: DataFrame, columns: Iterable[str]) -> None:
     missing = sorted(set(columns) - set(df.columns))
     if missing:
@@ -174,12 +206,12 @@ def prepare_eligible_flights(
     )
 
 
-def kien_pipeline_config() -> PipelineConfig:
-    """Return the pipeline configuration for Kiên's feature set."""
+def flight_feature_pipeline_config() -> PipelineConfig:
+    """Return the pipeline configuration for the flight feature set."""
 
-    from feature_integration import IQR_FLAG_COLS, KienFeatureContract
+    from feature_integration import IQR_FLAG_COLS, FlightFeatureContract
 
-    contract = KienFeatureContract()
+    contract = FlightFeatureContract()
     return PipelineConfig(
         categorical_cols=contract.categorical_cols,
         numeric_cols=contract.numeric_cols,
@@ -245,6 +277,52 @@ def build_preprocessing_pipeline(
         ),
     ]
     return Pipeline(stages=stages)
+
+
+def build_end_to_end_pipeline(
+    task: str,
+    config: PipelineConfig = PipelineConfig(),
+    feature_stages: Sequence[PipelineStage] = (),
+    estimator: Estimator | None = None,
+) -> Pipeline:
+    """Build the serialisable raw-input-to-prediction Spark ML pipeline.
+
+    Every train-time transformation, including label/eligibility handling,
+    categorical encoding, imputation, scaling and PCA, precedes the estimator
+    in one Pipeline.  The saved PipelineModel can consequently score raw
+    serving events without a separately reproduced feature-vector contract.
+    """
+    if task not in {"classification", "regression"}:
+        raise ValueError("task must be 'classification' or 'regression'")
+    label_col = config.classification_label if task == "classification" else config.regression_label
+    estimator = estimator or (
+        RandomForestClassifier(labelCol=label_col, featuresCol="features_pca", seed=42)
+        if task == "classification"
+        else RandomForestRegressor(labelCol=label_col, featuresCol="features_pca", seed=42)
+    )
+    preprocessing = build_preprocessing_pipeline(config, feature_stages)
+    return Pipeline(stages=[
+        FlightEligibilityAndLabelTransformer(config.regression_label, config.classification_label),
+        *preprocessing.getStages(),
+        estimator,
+    ])
+
+
+def fit_and_save_end_to_end_pipeline(
+    flights: DataFrame,
+    output_path: str | Path,
+    task: str,
+    config: PipelineConfig = PipelineConfig(),
+    feature_stages: Sequence[PipelineStage] = (),
+    estimator: Estimator | None = None,
+) -> PipelineModel:
+    """Fit one complete pipeline and save it without overwriting evidence."""
+    output = Path(output_path)
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite existing model artifact: {output}")
+    model = build_end_to_end_pipeline(task, config, feature_stages, estimator).fit(flights)
+    model.write().save(str(output))
+    return model
 
 
 def split_train_test(
@@ -349,12 +427,10 @@ def log_preprocessing_run(
     plot_path: Path,
     experiment_name: str,
 ) -> dict[str, object]:
-    """Log E22 evidence, including the fitted preprocessing ``PipelineModel``.
+    """Log preprocessing parameters, metrics, plots, and the fitted Spark model.
 
-    E22 is not considered complete merely because a run has parameters and
-    metrics. The fitted Spark model must also be persisted as an MLflow
-    artifact so training pipelines can append an estimator reproducibly and inference
-    services can load the exact preprocessing logic at runtime.
+    Persist the model artifact so training and inference can reuse the same
+    preprocessing logic.
     """
 
     try:
@@ -393,19 +469,18 @@ def log_preprocessing_run(
                 dfs_tmpdir=_mlflow_spark_temp_uri(),
             )
         except Exception as exc:
-            # Do not silently claim E22 passed when the model itself was not
-            # persisted.  Keep a diagnostic inside the run, then fail clearly.
+            # Record persistence failures in the run before propagating the error.
             message = f"{type(exc).__name__}: {exc}"
             mlflow.log_text(message, "diagnostics/model_persistence_error.txt")
             raise RuntimeError(
-                "E22 is incomplete: MLflow could not persist the fitted "
+                "MLflow could not persist the fitted "
                 "preprocessing PipelineModel. See diagnostics/model_persistence_error.txt."
             ) from exc
 
         mlflow.set_tag("preprocessing_model_log_status", "logged")
         mlflow.log_dict(
             {
-                "criterion": "E22 — MLflow params, metrics, PCA plot, config, and model artifact",
+                "criterion": "MLflow parameters, metrics, PCA plot, configuration, and model artifact",
                 "run_id": run.info.run_id,
                 "preprocessing_model_logged": True,
                 "artifact_paths": [
@@ -414,7 +489,7 @@ def log_preprocessing_run(
                     "preprocessing_pipeline/",
                 ],
             },
-            "verification/e22_mlflow_manifest.json",
+            "verification/preprocessing_mlflow_manifest.json",
         )
         return {
             "run_id": run.info.run_id,
@@ -512,13 +587,13 @@ def main() -> None:
         help="MLflow experiment name",
     )
     parser.add_argument(
-        "--with-kien-features",
+        "--with-flight-features",
         action="store_true",
         help="Use feature engineering from custom_transformers.py",
     )
     parser.add_argument(
         "--airports",
-        help="Path to typed airports Parquet; required with --with-kien-features",
+        help="Path to typed airports Parquet; required with --with-flight-features",
     )
     args = parser.parse_args()
 
@@ -530,22 +605,22 @@ def main() -> None:
         flights = spark.read.parquet(args.input)
         stages: list[PipelineStage] = []
 
-        if args.with_kien_features:
+        if args.with_flight_features:
             if not args.airports:
-                parser.error("--airports is required with --with-kien-features")
+                parser.error("--airports is required with --with-flight-features")
 
             from feature_integration import (
-                build_kien_feature_frame,
-                build_kien_iqr_stage,
+                build_flight_feature_frame,
+                build_flight_iqr_stage,
             )
 
-            config = kien_pipeline_config()
+            config = flight_feature_pipeline_config()
             airports = spark.read.parquet(args.airports)
-            flights = build_kien_feature_frame(
+            flights = build_flight_feature_frame(
                 prepare_eligible_flights(flights, config),
                 airports,
             )
-            stages = [build_kien_iqr_stage()]
+            stages = [build_flight_iqr_stage()]
         else:
             config = PipelineConfig()
 

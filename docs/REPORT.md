@@ -1,8 +1,5 @@
 # End-to-End Supervised Learning Pipelines, Custom Transformers, and Distributed Ensembles in PySpark MLlib
 
-- **Course:** Big Data — Group Assignment 1
-- **Group 1**
-- **Repository:** [`bich-le/BigData_Group1`](https://github.com/bich-le/BigData_Group1)  
 
 ---
 
@@ -11,7 +8,7 @@
 - [End-to-End Supervised Learning Pipelines, Custom Transformers, and Distributed Ensembles in PySpark MLlib](#end-to-end-supervised-learning-pipelines-custom-transformers-and-distributed-ensembles-in-pyspark-mllib)
   - [Table of content](#table-of-content)
   - [1. Overview and Problem Formulation](#1-overview-and-problem-formulation)
-  - [PART A: Mathematical Foundations \& Distributed Architecture (35 Marks)](#part-a-mathematical-foundations--distributed-architecture-35-marks)
+  - [PART A: Mathematical Foundations \& Distributed Architecture](#part-a-mathematical-foundations--distributed-architecture)
     - [2. Data Scaling Mathematics \& Distributed Sparse Operations](#2-data-scaling-mathematics--distributed-sparse-operations)
       - [2.1 StandardScaler vs. MinMaxScaler Formulations](#21-standardscaler-vs-minmaxscaler-formulations)
         - [Standard Z-Score Scaling](#standard-z-score-scaling)
@@ -43,21 +40,21 @@
         - [Gradient-Boosted Trees (Sequential Residual Fitting)](#gradient-boosted-trees-sequential-residual-fitting)
         - [Histogram-Based Feature Binning (`maxBins`)](#histogram-based-feature-binning-maxbins)
         - [Why GBT Cannot Build Trees in Parallel](#why-gbt-cannot-build-trees-in-parallel)
-  - [PART B: Advanced Hands-on Implementation (65 Marks)](#part-b-advanced-hands-on-implementation-65-marks)
+  - [PART B: Advanced Hands-on Implementation](#part-b-advanced-hands-on-implementation)
     - [5. Dataset Architecture \& Leakage Prevention](#5-dataset-architecture--leakage-prevention)
-    - [6. Task 1: Custom PySpark Transformers \& PyArrow Optimization](#6-task-1-custom-pyspark-transformers--pyarrow-optimization)
+    - [6. Custom PySpark Transformers \& PyArrow Optimization](#6-custom-pyspark-transformers--pyarrow-optimization)
       - [6.1 Arrow-Accelerated Haversine Distance (`pandas_udf`)](#61-arrow-accelerated-haversine-distance-pandas_udf)
       - [6.2 `OutlierIQRTruncator` (`pyspark.ml.Transformer`)](#62-outlieriqrtruncator-pysparkmltransformer)
       - [6.3 `TargetEncoder` (Leakage-Safe Categorical Target Encoding)](#63-targetencoder-leakage-safe-categorical-target-encoding)
-    - [7. Task 2: End-to-End Pipeline, PCA \& MLflow Tracking](#7-task-2-end-to-end-pipeline-pca--mlflow-tracking)
+    - [7. End-to-End Pipeline, PCA \& MLflow Tracking](#7-end-to-end-pipeline-pca--mlflow-tracking)
       - [Cumulative Explained Variance Analysis](#cumulative-explained-variance-analysis)
       - [MLflow Model Registry Tracking](#mlflow-model-registry-tracking)
-    - [8. Task 3: The 5-Model Tournament \& Distributed Tuning](#8-task-3-the-5-model-tournament--distributed-tuning)
-      - [8.1 Task 1: Severe Delay Classification (SFDWS) Tournament](#81-task-1-severe-delay-classification-sfdws-tournament)
-      - [8.2 Task 2: Arrival Delay Regression (FDDPS) Tournament](#82-task-2-arrival-delay-regression-fddps-tournament)
+    - [8. The 5-Model Tournament \& Distributed Tuning](#8-the-5-model-tournament--distributed-tuning)
+      - [8.1 Severe Delay Classification (SFDWS) Tournament](#81-severe-delay-classification-sfdws-tournament)
+      - [8.2 Arrival Delay Regression (FDDPS) Tournament](#82-arrival-delay-regression-fddps-tournament)
       - [8.3 Distributed Hyperparameter Grid Tuning (Random Forest Regression)](#83-distributed-hyperparameter-grid-tuning-random-forest-regression)
         - [Architectural Insights](#architectural-insights)
-    - [9. Task 4: Serialization \& Real-Time Streaming Inference](#9-task-4-serialization--real-time-streaming-inference)
+    - [9. Serialization \& Real-Time Streaming Inference](#9-serialization--real-time-streaming-inference)
       - [Production Structured Streaming Workflow](#production-structured-streaming-workflow)
         - [Sample Scored Streaming Output](#sample-scored-streaming-output)
     - [10. Conclusion and Operational Recommendations](#10-conclusion-and-operational-recommendations)
@@ -66,7 +63,7 @@
 
 ## 1. Overview and Problem Formulation
 
-This project evaluates large-scale supervised learning workflows within Apache Spark MLlib using the United States Department of Transportation (USDOT) 2015 Flight Delays and Performance dataset (5,819,079 flight events across 31 raw columns). We investigate two supervised operational targets:
+This project evaluates large-scale supervised learning workflows within Apache Spark MLlib using the United States Department of Transportation (USDOT) 2015 Flight Delays and Performance dataset (5,819,079 flight events across 31 raw columns). The analysis covers two supervised operational targets:
 
 1. **Severe Flight Delay Warning System (SFDWS) — Classification:** Binary prediction of whether an eligible flight will arrive $\ge 30$ minutes late (`severe_delay` $\in \{0, 1\}$).
 2. **Flight Delay Duration Prediction System (FDDPS) — Regression:** Continuous estimation of arrival delay in minutes (`ARRIVAL_DELAY` $\in \mathbb{R}$).
@@ -85,7 +82,7 @@ flowchart LR
 
 ---
 
-## PART A: Mathematical Foundations & Distributed Architecture (35 Marks)
+## PART A: Mathematical Foundations & Distributed Architecture
 
 ### 2. Data Scaling Mathematics & Distributed Sparse Operations
 
@@ -170,7 +167,7 @@ $$
 Zero coordinates remain zero. The underlying sparsity index array is unaltered; no implicit zero is materialized into executor RAM.
 
 ##### Implementation in `mllib_pipeline.py`
-To preserve memory efficiency across millions of flight records, our preprocessing pipeline strictly enforces:
+To preserve memory efficiency across millions of flight records, the preprocessing pipeline strictly enforces:
 
 ```python
 # mllib_pipeline.py: Sparsity-preserving distributed scaling
@@ -188,7 +185,7 @@ StandardScaler(
 
 Real-world operational delays exhibit heavy right-skewed fat tails: the vast majority of flights experience small delays or arrive early, while a small fraction suffer severe delays exceeding several hours.
 
-Standard z-score scaling remains sensitive to these extremes because sample mean $\mu_j$ and standard deviation $\sigma_j$ are non-robust statistics. To stabilize variance before standardizing, we apply the variance-stabilizing `log1p` transformation:
+Standard z-score scaling remains sensitive to these extremes because sample mean $\mu_j$ and standard deviation $\sigma_j$ are non-robust statistics. To stabilize variance before standardizing, the pipeline applies the variance-stabilizing `log1p` transformation:
 
 $$
 x'_{ij} = \ln(1 + x_{ij}) \quad \text{for } x_{ij} \ge 0
@@ -448,7 +445,7 @@ flowchart TD
 ```
 
 ##### Soft-Margin Relaxation via Slack Variables
-When classes overlap or contain outliers, hard separation is impossible. We introduce non-negative slack variables $\xi_i \ge 0$, relaxing the constraint:
+When classes overlap or contain outliers, hard separation is impossible. The formulation introduces non-negative slack variables $\xi_i \ge 0$, relaxing the constraint:
 
 $$
 y_i(\mathbf{w}^T\mathbf{x}_i - b) \ge 1 - \xi_i
@@ -564,7 +561,7 @@ flowchart TD
 
 ---
 
-## PART B: Advanced Hands-on Implementation (65 Marks)
+## PART B: Advanced Hands-on Implementation
 
 ### 5. Dataset Architecture & Leakage Prevention
 
@@ -578,9 +575,9 @@ flowchart TD
 
 ---
 
-### 6. Task 1: Custom PySpark Transformers & PyArrow Optimization
+### 6. Custom PySpark Transformers & PyArrow Optimization
 
-We implemented native PySpark Transformer subclasses in `custom_transformers.py` and validated them against 31 unit tests (`tests/test_custom_transformers.py` — 100% pass rate):
+The implementation provides native PySpark Transformer subclasses in `custom_transformers.py` and validated them against 31 unit tests (`tests/test_custom_transformers.py` — 100% pass rate):
 
 #### 6.1 Arrow-Accelerated Haversine Distance (`pandas_udf`)
 Calculates orthodromic great-circle distance between origin and destination coordinates using PyArrow IPC vectorization:
@@ -646,9 +643,9 @@ This guarantees that validation and test targets never leak into category repres
 
 ---
 
-### 7. Task 2: End-to-End Pipeline, PCA & MLflow Tracking
+### 7. End-to-End Pipeline, PCA & MLflow Tracking
 
-Our preprocessing pipeline in `mllib_pipeline.py` integrates:
+The preprocessing pipeline in `mllib_pipeline.py` integrates:
 1. `ScheduledHourTransformer`: Extracts departure hour handling the BTS 2400 time convention.
 2. `Imputer`: Median imputation on numeric features.
 3. `StringIndexer` & `OneHotEncoder`: One-hot encoding categorical variables (`AIRLINE`, `ORIGIN_AIRPORT`, `DESTINATION_AIRPORT`).
@@ -669,11 +666,11 @@ Both production pipelines were logged and registered to the local tracking repos
 
 ---
 
-### 8. Task 3: The 5-Model Tournament & Distributed Tuning
+### 8. The 5-Model Tournament & Distributed Tuning
 
 All candidate models were trained under identical 80/20 train/validation splits and evaluated on the 932,084 OOT records.
 
-#### 8.1 Task 1: Severe Delay Classification (SFDWS) Tournament
+#### 8.1 Severe Delay Classification (SFDWS) Tournament
 
 | Model             | Train Gini |  Train KS  | Valid Gini |  Valid KS  |  OOT Gini  |   OOT KS   | OOT Precision | OOT Recall | Tournament Verdict                  |
 | ----------------- | :--------: | :--------: | :--------: | :--------: | :--------: | :--------: | :-----------: | :--------: | ----------------------------------- |
@@ -683,7 +680,7 @@ All candidate models were trained under identical 80/20 train/validation splits 
 
 *Key Finding:* Random Forest achieved the highest out-of-time Gini (0.6762) with virtually zero degradation from validation (0.6757), whereas Gradient Boosting suffered severe generalization drop (Train Gini 0.8276 $\to$ OOT Gini 0.6071).
 
-#### 8.2 Task 2: Arrival Delay Regression (FDDPS) Tournament
+#### 8.2 Arrival Delay Regression (FDDPS) Tournament
 
 | Model               | Train $R^2$ | Train RMSE | Valid $R^2$ | Valid RMSE | OOT $R^2$  | OOT RMSE  |  OOT MAE  | Tournament Verdict                     |
 | ------------------- | :---------: | :--------: | :---------: | :--------: | :--------: | :-------: | :-------: | -------------------------------------- |
@@ -693,7 +690,7 @@ All candidate models were trained under identical 80/20 train/validation splits 
 | GLM (Gamma/Poisson) |   0.2294    |   33.86    |   0.1976    |   34.67    |   0.1891   |   36.91   |   18.57   | High Error (Log link curvature misfit) |
 
 #### 8.3 Distributed Hyperparameter Grid Tuning (Random Forest Regression)
-We evaluated hyperparameter combinations using 3-fold cross-validation (`CrossValidator`):
+The evaluation covered hyperparameter combinations using 3-fold cross-validation (`CrossValidator`):
 
 |    Config    |  Trees  | Max Depth | Min Instances / Leaf | 3-Fold CV RMSE | Validation RMSE |        Status         |
 | :----------: | :-----: | :-------: | :------------------: | :------------: | :-------------: | :-------------------: |
@@ -710,11 +707,10 @@ We evaluated hyperparameter combinations using 3-fold cross-validation (`CrossVa
 2. **Variance Plateau (300 vs. 500 Trees):** Cross-validation RMSE flattened between 300 trees (32.7898) and 500 trees (32.8394). Config 3 was selected under Ockham's razor, achieving lower error while cutting compute time and memory footprint by ~40%.
 3. **Partition Parallelism Bug Fix:** Initial cross-validation split generation using `Window.orderBy(F.rand(42))` without a `partitionBy` clause collapsed all 3.74 million records onto a single partition (`(0 + 1) / 1`), reducing 16 CPU cores to 1 active core. Adding explicit `.repartition(16)` with RAM persistence (`MEMORY_AND_DISK`) restored full 16-core CPU saturation.
 4. **Cross-Validation Fold Count (3-fold vs. 5-fold):** While standard classroom tutorials employ 5-fold cross-validation, on 3.74 million training records with deep tree ensembles, 3-fold cross-validation was chosen to prevent executor memory exhaustion and cluster runtime blowup while delivering tight empirical validation bounds ($\pm 0.05$ RMSE).
-5. **Feature Importance Analysis:** Top relative feature importances extracted via `scripts/benchmark_results.py` and plotted at `docs/assets/feature_importance.png` identify departure hour (`scheduled_hour`, 18.4%), short-term airport congestion (`airport_avg_delay_lag3h`, 14.2%), and previous-day airline reliability (`airline_late_flight_ratio_lag1d`, 11.8%) as the primary operational predictors.
 
 ---
 
-### 9. Task 4: Serialization & Real-Time Streaming Inference
+### 9. Serialization & Real-Time Streaming Inference
 
 The winning models are serialized as self-contained Spark `PipelineModel` directories containing `metadata` and estimator `stages`:
 * `models/random_forest_final_spark` (Classification)

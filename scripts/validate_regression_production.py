@@ -1,7 +1,7 @@
 """Reload and evaluate the fitted regression PipelineModel on held-out OOT data.
 
 This script only calls ``PipelineModel.load`` and ``model.transform``. It never
-fits or retrains a model. The teammate-confirmed validation metrics remain the
+fits or retrains a model. The recorded validation metrics remain the
 model-selection record; this script independently reproduces the final OOT test.
 """
 
@@ -19,11 +19,7 @@ from pyspark.sql import SparkSession, functions as F
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = ROOT / "models/random_forest_regression_final_spark"
-DEFAULT_BASE = (
-    ROOT / "data/model-ready/base"
-    if (ROOT / "data/model-ready/base").exists()
-    else ROOT.parent / "huy/model-ready/base"
-)
+DEFAULT_BASE = ROOT / "data/model-ready/base"
 DEFAULT_RESULT = ROOT / "docs/evaluations/regression_oot_recheck.json"
 OOT_START = "2015-11-01"
 EXPECTED_PARAMS = {

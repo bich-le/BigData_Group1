@@ -15,7 +15,7 @@ SELECTED_FEATURES = [
 ]
 
 # Both fitted artifacts currently use the same verified ordered contract.
-# Keeping task keys explicit prevents inference from assuming this forever.
+# Explicit task keys keep inference contracts independently configurable.
 FEATURES_BY_TASK = {
     "classification": SELECTED_FEATURES,
     "regression": SELECTED_FEATURES,

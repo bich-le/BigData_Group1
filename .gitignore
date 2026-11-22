@@ -46,3 +46,44 @@ checkpoint/
 *.pid
 logs/
 temp/
+
+# Local reference documents, archives, and scratch notebooks
+/*.xlsx
+/*.docx
+/*.zip
+/* copy.ipynb
+/baseline_feature.ipynb
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+
+# Local credentials and configuration
+.aws/
+.envrc
+
+# Test, coverage, and build output
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+build/
+dist/
+*.egg-info/
+
+# Local databases, temporary files, and Spark output
+mlartifacts/
+mlflow.db-*
+*.tmp
+*.bak
+tmp/
+artifacts/
+derby.log

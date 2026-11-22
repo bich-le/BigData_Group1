@@ -1,4 +1,4 @@
-"""PySpark version of `02_sfdws_model copy.ipynb` and `function_utils (1).py`.
+"""Distributed regression feature selection and Random Forest tuning.
 
 The processing order, feature list, filters, train/validation/OOT split, grid
 search and final Random Forest workflow are retained.  This file deliberately
@@ -25,18 +25,14 @@ from pyspark.sql.types import BooleanType, DoubleType, IntegerType, NumericType,
 import os
 import sys
 
-# Force Spark Python workers to use the current conda environment
+# Use the current Python interpreter for Spark workers.
 os.environ["PYSPARK_PYTHON"] = sys.executable
 os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 from pyspark.sql import SparkSession, Window, functions as F
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_PATH = (
-    ROOT / "data/model-ready/base"
-    if (ROOT / "data/model-ready/base").exists()
-    else ROOT.parent / "huy/model-ready/base"
-)
+DEFAULT_DATA_PATH = ROOT / "data/model-ready/base"
 DEFAULT_MODEL_PATH = ROOT / "models/random_forest_regression_final_spark"
 
 # Honour spark-submit runtime settings such as --master and --driver-memory.
@@ -48,7 +44,7 @@ spark = (
     .getOrCreate()
 )
 # ---------------------------------------------------------------------------
-# Library and configuration (the first code cell in the supplied notebook)
+# Model and feature-selection configuration
 # ---------------------------------------------------------------------------
 
 CONFIGURE = {
@@ -146,7 +142,7 @@ def score_with_model(model, df):
 
 
 # ---------------------------------------------------------------------------
-# Feature-filter functions converted from function_utils (1).py
+# Distributed feature filtering
 # ---------------------------------------------------------------------------
 def missing_filter_fct(df, missing_threshold):
     missing_rates = df.select(*[
@@ -471,7 +467,7 @@ def recursive_feature_elimination_cv(
 
 
 # ---------------------------------------------------------------------------
-# Modelling and metrics converted from function_utils (1).py
+# Model fitting and evaluation
 # ---------------------------------------------------------------------------
 def grid_search_cv_model(
     X_train,
@@ -883,7 +879,7 @@ def run_pipeline(
 
     X_train = X_train.select("__row_id", *selected)
 
-    # NEW STEP: correlation(feature, ARRIVAL_DELAY), replacing IV.
+    # Rank features by correlation with ARRIVAL_DELAY.
     corr_label_df = (
         X_train.join(y_train, "__row_id")
         .select(*selected, label_col)

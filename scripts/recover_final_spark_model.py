@@ -22,11 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-DEFAULT_BASE = (
-    ROOT / "data/model-ready/base"
-    if (ROOT / "data/model-ready/base").exists()
-    else ROOT.parent / "huy/model-ready/base"
-)
+DEFAULT_BASE = ROOT / "data/model-ready/base"
 DEFAULT_OUTPUT = ROOT / "models/random_forest_final_spark"
 
 from feature_contract import SELECTED_FEATURES
@@ -68,9 +64,7 @@ def prepare_training_data(spark, base_path):
 
 
 def fit_final_model(train):
-    # Exact effective Spark mapping of the fixed parameters at lines 543-546
-    # in sfdws_model_spark.py. min_samples_split and n_jobs have no Spark RF
-    # equivalent. Balanced class weights are computed on this train split.
+    # Compute balanced class weights from the training split.
     counts = train.groupBy("label").count()
     totals = counts.agg(F.sum("count").alias("n"), F.count("*").alias("k")).first()
     weights = counts.withColumn(

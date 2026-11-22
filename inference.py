@@ -1,23 +1,15 @@
-"""Spark Structured Streaming inference for both flight-delay models.
-
-Input JSON contains an optional ``event_id`` plus the 23 numeric model-ready
-features in ``FEATURES_BY_TASK``. Historical lag features must be produced
-upstream. Missing feature values are filled with zero, matching training.
-"""
+"""Spark Structured Streaming inference through the saved full ML pipeline."""
 
 import argparse
 from pathlib import Path
 
 from pyspark.ml import PipelineModel
 from pyspark.ml.classification import RandomForestClassificationModel
-from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.feature import ImputerModel, StringIndexerModel
 from pyspark.ml.functions import vector_to_array
 from pyspark.ml.regression import RandomForestRegressionModel
 from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
-
-from feature_contract import FEATURES_BY_TASK
-
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MODELS = {
@@ -26,28 +18,45 @@ DEFAULT_MODELS = {
 }
 
 
-def input_schema(task):
-    return StructType(
-        [StructField("event_id", StringType(), True)]
-        + [StructField(name, DoubleType(), True) for name in FEATURES_BY_TASK[task]]
-    )
+def input_schema(model):
+    """Infer a raw-event schema from saved preprocessing stages.
+
+    This intentionally does not use the retired 23-column model-ready
+    contract.  Columns created by a pipeline transformer are excluded.
+    """
+    numeric, categorical, generated = set(), set(), set()
+    for stage in model.stages:
+        if isinstance(stage, ImputerModel):
+            numeric.update(stage.getInputCols())
+        elif isinstance(stage, StringIndexerModel):
+            categorical.add(stage.getInputCol())
+        if type(stage).__name__ == "ScheduledHourTransformer":
+            generated.add(stage.getOrDefault(stage.outputCol))
+            numeric.add(stage.getOrDefault(stage.inputCol))
+    numeric.difference_update(generated)
+    fields = [StructField("event_id", StringType(), True)]
+    fields += [StructField(name, StringType(), True) for name in sorted(categorical)]
+    fields += [StructField(name, DoubleType(), True) for name in sorted(numeric)]
+    fields += [StructField("CANCELLED", DoubleType(), True), StructField("DIVERTED", DoubleType(), True)]
+    return StructType(fields)
 
 
 def load_verified_model(path, task):
     model = PipelineModel.load(str(path))
     stage_names = [type(stage).__name__ for stage in model.stages]
-    if len(model.stages) != 2 or not isinstance(model.stages[0], VectorAssembler):
-        raise ValueError(f"Unexpected pipeline stages: {stage_names}")
     expected_model_type = (
         RandomForestClassificationModel
         if task == "classification"
         else RandomForestRegressionModel
     )
-    if not isinstance(model.stages[1], expected_model_type):
+    if not isinstance(model.stages[-1], expected_model_type):
         raise ValueError(f"Saved model is not a Spark Random Forest {task} model")
-    actual = model.stages[0].getInputCols()
-    if actual != FEATURES_BY_TASK[task]:
-        raise ValueError(f"Model feature contract differs: {actual}")
+    required = {"FlightEligibilityAndLabelTransformer", "ImputerModel", "PCAModel"}
+    if not required.issubset(set(stage_names)):
+        raise ValueError(
+            "Model is a legacy feature-vector artifact, not a full raw-input pipeline: "
+            f"{stage_names}"
+        )
     return model
 
 
@@ -83,15 +92,11 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
     try:
         model = load_verified_model(model_path, args.task)
-        feature_cols = FEATURES_BY_TASK[args.task]
         incoming = (
-            spark.readStream.schema(input_schema(args.task))
+            spark.readStream.schema(input_schema(model))
             .json(str(args.input_dir))
         )
-        prepared = incoming.select("event_id", *feature_cols).fillna(
-            0, subset=feature_cols
-        )
-        transformed = model.transform(prepared)
+        transformed = model.transform(incoming)
         if args.task == "classification":
             scored = transformed.select(
                 "event_id",
