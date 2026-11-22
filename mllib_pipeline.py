@@ -73,7 +73,7 @@ def configure_local_filesystem(builder):
     normal filesystem behavior.
     """
 
-    if not _BARE_LOCAL_FS_JAR.is_file():
+    if not sys.platform.startswith("win") or not _BARE_LOCAL_FS_JAR.is_file():
         return builder
     jar = str(_BARE_LOCAL_FS_JAR)
     return (
@@ -142,7 +142,7 @@ class ScheduledHourTransformer(
         raw = F.trim(F.col(self.getOrDefault(self.inputCol)).cast("string"))
         hhmm = raw.cast("int")
         hour = F.when(hhmm == 2400, F.lit(0)).when(
-            (hhmm >= 0) & (hhmm <= 2359),
+            (hhmm >= 0) & (hhmm <= 2359) & ((hhmm % 100) < 60),
             F.floor(hhmm / F.lit(100)),
         )
         return dataset.withColumn(
@@ -178,6 +178,29 @@ class FlightEligibilityAndLabelTransformer(
                 self.getOrDefault(self.classificationLabel), (F.col(label) > F.lit(30)).cast("double")
             )
         return result
+
+
+class RegressionOffsetTransformer(Transformer, DefaultParamsReadable, DefaultParamsWritable):
+    """Shift labels for Gamma/log GLM and restore predictions to delay minutes.
+
+    The offset is a fixed configuration value, never estimated from held-out
+    data. Serving events do not require a label.
+    """
+    offset = Param(Params._dummy(), "offset", "Positive label offset in minutes", TypeConverters.toFloat)
+    inverse = Param(Params._dummy(), "inverse", "Restore prediction units", TypeConverters.toBoolean)
+
+    def __init__(self, offset=1440.0, inverse=False):
+        super().__init__()
+        self._setDefault(offset=1440.0, inverse=False)
+        self._set(offset=offset, inverse=inverse)
+
+    def _transform(self, dataset):
+        value = self.getOrDefault(self.offset)
+        if self.getOrDefault(self.inverse):
+            return dataset.withColumn("prediction", F.col("prediction") - F.lit(value))
+        if "ARRIVAL_DELAY" in dataset.columns:
+            return dataset.withColumn("__positive_delay", F.col("ARRIVAL_DELAY") + F.lit(value))
+        return dataset
 
 
 def _require_columns(df: DataFrame, columns: Iterable[str]) -> None:
@@ -300,6 +323,11 @@ def build_end_to_end_pipeline(
         if task == "classification"
         else RandomForestRegressor(labelCol=label_col, featuresCol="features_pca", seed=42)
     )
+    if not feature_stages:
+        from custom_transformers import OutlierIQRTruncator
+        columns = [name for name in ("DISTANCE", "SCHEDULED_TIME") if name in config.numeric_cols]
+        if columns:
+            feature_stages = (OutlierIQRTruncator(inputCols=columns, outputCols=columns),)
     preprocessing = build_preprocessing_pipeline(config, feature_stages)
     return Pipeline(stages=[
         FlightEligibilityAndLabelTransformer(config.regression_label, config.classification_label),
@@ -568,7 +596,7 @@ def fit_preprocessing(
     return model, train, transformed_test, summary
 
 
-def main() -> None:
+def preprocessing_main() -> None:
     parser = argparse.ArgumentParser(
         description="Fit the preprocessing and PCA pipeline on typed flight Parquet data."
     )
@@ -634,6 +662,16 @@ def main() -> None:
         print(json.dumps(summary, indent=2))
     finally:
         spark.stop()
+
+
+def main() -> None:
+    """Run the complete training workflow, or the explicit preprocessing utility."""
+    if "--preprocess-only" in sys.argv:
+        sys.argv.remove("--preprocess-only")
+        preprocessing_main()
+    else:
+        from scripts.train_tournament import main as train_main
+        train_main()
 
 
 if __name__ == "__main__":

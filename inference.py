@@ -4,17 +4,17 @@ import argparse
 from pathlib import Path
 
 from pyspark.ml import PipelineModel
-from pyspark.ml.classification import RandomForestClassificationModel
+from pyspark.ml.classification import GBTClassificationModel, LinearSVCModel, RandomForestClassificationModel
 from pyspark.ml.feature import ImputerModel, StringIndexerModel
 from pyspark.ml.functions import vector_to_array
-from pyspark.ml.regression import RandomForestRegressionModel
+from pyspark.ml.regression import GBTRegressionModel, GeneralizedLinearRegressionModel, LinearRegressionModel, RandomForestRegressionModel
 from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MODELS = {
-    "classification": ROOT / "models/random_forest_final_spark",
-    "regression": ROOT / "models/random_forest_regression_final_spark",
+    "classification": ROOT / "models/classification_full_pipeline",
+    "regression": ROOT / "models/regression_full_pipeline",
 }
 
 
@@ -33,6 +33,9 @@ def input_schema(model):
         if type(stage).__name__ == "ScheduledHourTransformer":
             generated.add(stage.getOrDefault(stage.outputCol))
             numeric.add(stage.getOrDefault(stage.inputCol))
+    for stage in model.stages:
+        if type(stage).__name__ == "OutlierIQRTruncatorModel":
+            numeric.update(stage.getInputCols())
     numeric.difference_update(generated)
     fields = [StructField("event_id", StringType(), True)]
     fields += [StructField(name, StringType(), True) for name in sorted(categorical)]
@@ -45,12 +48,12 @@ def load_verified_model(path, task):
     model = PipelineModel.load(str(path))
     stage_names = [type(stage).__name__ for stage in model.stages]
     expected_model_type = (
-        RandomForestClassificationModel
+        (RandomForestClassificationModel, GBTClassificationModel, LinearSVCModel)
         if task == "classification"
-        else RandomForestRegressionModel
+        else (RandomForestRegressionModel, GBTRegressionModel, LinearRegressionModel, GeneralizedLinearRegressionModel)
     )
-    if not isinstance(model.stages[-1], expected_model_type):
-        raise ValueError(f"Saved model is not a Spark Random Forest {task} model")
+    if not any(isinstance(stage, expected_model_type) for stage in model.stages):
+        raise ValueError(f"Saved model has no supported Spark {task} estimator")
     required = {"FlightEligibilityAndLabelTransformer", "ImputerModel", "PCAModel"}
     if not required.issubset(set(stage_names)):
         raise ValueError(
@@ -101,7 +104,7 @@ def main():
             scored = transformed.select(
                 "event_id",
                 F.col("prediction").cast("int").alias("prediction"),
-                vector_to_array("probability")[1].alias("probability_late_over_30m"),
+                (vector_to_array("probability")[1] if "probability" in transformed.columns else F.lit(None).cast("double")).alias("probability_late_over_30m"),
             )
         else:
             scored = transformed.select(

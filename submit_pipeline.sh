@@ -38,7 +38,7 @@ trap 'rm -rf "$RUN_DIR"' EXIT
 
 if [[ ! -d "$MODEL_DIR" ]]; then
   echo "Missing full PipelineModel: $MODEL_DIR" >&2
-  echo "Train one first with scripts/train_tournament.py; existing legacy two-stage artifacts are intentionally rejected." >&2
+  echo "Train one first with mllib_pipeline.py; existing legacy two-stage artifacts are intentionally rejected." >&2
   exit 1
 fi
 mkdir -p "$INPUT_DIR"

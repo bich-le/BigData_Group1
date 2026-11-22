@@ -1,99 +1,78 @@
-# Production inference
+# Full-pipeline training and serving
 
-Two native Spark `PipelineModel` artifacts are verified locally:
+The supported entry point is root-level `mllib_pipeline.py`. See the repository
+README for complete commands. `scripts/train_tournament.py` contains its reusable
+training implementation; either entry point accepts identical arguments.
 
-- classification: `models/random_forest_final_spark`;
-- regression: `models/random_forest_regression_final_spark`.
+## Training contract
 
-Both have stages `VectorAssembler -> RandomForest{Classification,Regression}Model`.
-The artifacts are excluded from Git because of their size.
+Raw typed Parquet must contain `AIRLINE`, `ORIGIN_AIRPORT`,
+`DESTINATION_AIRPORT`, `MONTH`, `DAY`, `DAY_OF_WEEK`, `SCHEDULED_TIME`,
+`SCHEDULED_DEPARTURE`, `DISTANCE`, `CANCELLED`, `DIVERTED`, `ARRIVAL_DELAY`.
+Eligibility excludes cancelled/diverted rows and null targets. Classification
+is strictly `ARRIVAL_DELAY > 30`. The target is never an input feature.
 
-## Input contract
+Every saved raw-input PipelineModel contains eligibility/label handling,
+scheduled hour, a fitted IQR model, median imputation, StringIndexer models,
+OneHotEncoder, VectorAssembler, StandardScaler(withMean=False), PCA(k=10 by
+default), and the fitted estimator. Gamma/log GLM additionally persists label
+shift and prediction inverse transforms. No preprocessing model is fit on the
+held-out test set. CV refits learned preprocessing inside each training fold.
 
-Each JSON record contains optional string `event_id` plus the 23 ordered numeric
-features in `feature_contract.py`. Airline, airport, and aircraft history/lag
-features must be engineered upstream. Streaming inference does not derive them
-from a raw flight event. Missing features are filled with zero, matching fitting.
-No target or outcome field is required for inference.
+## Artifacts
 
-Task-specific examples:
+| Output | Location |
+|---|---|
+| Classification PipelineModel | `models/classification_full_pipeline/` |
+| Regression PipelineModel | `models/regression_full_pipeline/` |
+| Measured grids, split sizes, CV and test metrics | `<results-dir>/tournament.json` |
+| Exact held-out input data | `<results-dir>/test_data/` |
+| PCA and model diagnostics | `<results-dir>/<algorithm>/` |
+| MLflow database | `mlflow.db`, or `--tracking-uri` |
+| Registered model | `FlightDelayFullPipelineClassification` / `FlightDelayFullPipelineRegression` |
 
-- `docs/contracts/sample_classification_stream_input.json`;
-- `docs/contracts/sample_regression_stream_input.json`.
+The winner is chosen using training CV AUC-ROC (classification) or RMSE
+(regression). Held-out metrics are reported without using them for selection.
+Each registered version receives Staging/Production validation tags and
+`staging`/`production` aliases. Model, data and runtime state stay outside Git;
+a submission must include generated artifacts separately or provide their
+MLflow artifact location. The placeholder `models/README.md` is not a model.
 
-## Regression selection and final evaluation
+## Streaming contract
 
-Depth-18 configurations were skipped because their Spark MLlib tree growth was
-computationally infeasible on the available machine. CV fold counts differed, so
-the global winner was selected by RMSE on the common random 20% pre-OOT
-validation split (seed 42). Standardized validation benchmarks confirmed that the supplied artifact is the exact winner fitted on the full 80% training split. A local `randomSplit` reconstruction produced different row membership, so the standardized benchmark metrics remain the authoritative validation record. OOT was reserved for final evaluation. See
-`docs/evaluations/REGRESSION_RESULTS.md`, `docs/evaluations/regression_selection.json`, and `docs/evaluations/regression_evaluation.json`.
-
-Winner: 500 trees, depth 15, minimum 5 instances per node.
-
-- validation RMSE: 32.736849;
-- validation MAE: 16.256044;
-- validation R²: 0.279717;
-- full OOT rows: 932,084;
-- OOT RMSE: 35.051807;
-- OOT MAE: 17.101296;
-- OOT R²: 0.267770.
-
-## MLflow Registry
-
-| Task | Registered model | Version | Alias | Run ID |
-|---|---|---:|---|---|
-| Classification | FlightDelayRandomForestSpark | 1 | champion | `ff18ccd6201445efb032efcbe2992fff` |
-| Regression | FlightDelayRegressionSpark | 1 | champion | `4f320e8a8778499d9e58dc0f0832689c` |
-
-The local tracking database is `mlflow.db`; artifacts are in `mlruns/`. Both are
-runtime state excluded from Git.
-
-## Pipeline Demo
-
-The demo reloads an existing artifact, scores a small OOT subset in a fresh
-process, then executes one `spark.readStream` JSON microbatch. It does not train.
+Serving JSON contains the training fields except `ARRIVAL_DELAY`, plus optional
+`event_id`. Strings encode airline and airport IDs; scheduled HHMM and numeric
+fields use JSON numbers. Samples are in `docs/contracts/sample_*_stream_input.json`.
+Schema is derived from fitted preprocessing. Unseen categoricals are handled
+by the saved indexer/encoder; numeric nulls use fitted imputation.
 
 ```bash
-source ../.venv/bin/activate
-./submit_pipeline.sh classification
-./submit_pipeline.sh regression
+spark-submit --master 'local[2]' inference.py --task classification \
+  --model models/classification_full_pipeline \
+  --input-dir /path/to/input --output-dir /path/to/output \
+  --checkpoint-dir /path/to/checkpoint --available-now
 ```
 
-Classification output fields: `event_id`, `prediction`,
-`probability_late_over_30m`. Example verified output:
+Omit `--available-now` for a continuously running query. Input, output and
+checkpoint paths must be distinct. Classification emits `prediction` and
+`probability_late_over_30m` (null for LinearSVC); regression emits
+`predicted_arrival_delay_minutes`. Labels are not needed for streaming.
 
-```json
-{"event_id":"classification-oot-sample-0001","prediction":0,"probability_late_over_30m":0.29287657056394084}
-```
+`submit_pipeline.sh` creates one temporary microbatch and reloads the model in
+a fresh process. `MODEL_DIR`, `DRIVER_MEMORY` and `PYSPARK_PYTHON` can override
+defaults. The demo never trains or deletes model directories.
 
-Regression output fields: `event_id`,
-`predicted_arrival_delay_minutes`. Example verified output:
+## Batch history and legacy compatibility
 
-```json
-{"event_id":"regression-oot-sample-0001","predicted_arrival_delay_minutes":-7.252585765992283}
-```
+`scripts/build_modeling_dataset.py` materializes optional history features.
+It does not define a stateless raw-event serving contract. History windows
+ordered by scheduled timestamps alone do not prove that past outcomes were
+available at inference time; production history needs outcome-availability
+cutoffs. These features are excluded from the default raw-input pipeline.
 
-Direct long-running streaming command:
-
-```bash
-spark-submit --master 'local[2]' --driver-memory 32g --conf spark.driver.maxResultSize=4g inference.py \
-  --task regression \
-  --input-dir /path/to/input \
-  --output-dir /path/to/output \
-  --checkpoint-dir /path/to/checkpoint
-```
-
-Add `--available-now` for a finite demonstration batch. Input, output, and
-checkpoint directories must differ.
-
-## Tested environment and memory
-
-- Python 3.12.3
-- OpenJDK 17.0.20.1
-- Spark/PySpark 3.5.9
-- MLflow 3.10.1
-- PyArrow 23.0.1
-
-Pipeline demos use 32 GB driver memory and `spark.driver.maxResultSize=4g` for
-the large regression forest. Model fitting is not part of the demo.
+`feature_contract.py`, `scripts/recover_final_spark_model.py`,
+`scripts/sfdws_model_spark_regression.py`, `scripts/register_mlflow.py`,
+`scripts/validate_spark_model.py`, `scripts/validate_regression_production.py`
+and `scripts/inference_sklearn_stream.py` support the legacy pre-engineered
+23-feature artifacts only. They do not register, validate or serve the new
+raw-input models. Their historical metrics are retained as prior evidence.

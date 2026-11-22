@@ -1,4 +1,4 @@
-# Pipeline Validation Evidence
+# Historical Model-Ready Validation Evidence
 
 Runtime usernames, hostnames, and private network addresses in the saved logs
 are anonymized. Predictions, metrics, and run identifiers are retained.

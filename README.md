@@ -1,148 +1,110 @@
-# BigData Group 1 — End-to-End Supervised Learning Pipeline in PySpark MLlib
+# Flight Delay Pipelines in PySpark MLlib
 
-End-to-end distributed machine learning system for flight delay prediction and severity classification built with PySpark MLlib, custom PySpark transformers, Arrow-accelerated pandas UDFs, MLflow tracking, and Spark Structured Streaming.
+Reproducible training, evaluation, MLflow registration and JSON streaming for
+severe arrival delay classification (`ARRIVAL_DELAY > 30`) and delay regression.
 
-The system addresses two production tasks:
-1. **Severe Flight Delay Warning System (SFDWS - Classification):** Predicts whether a flight will experience severe arrival delay ($\ge 30$ minutes).
-2. **Flight Delay Duration Prediction System (FDDPS - Regression):** Predicts the exact arrival delay in minutes.
-
----
-
-## Repository Structure
+## Submission layout
 
 ```text
-├── README.md                         # Project overview and runbook
-├── requirements.txt                  # Pinned Python dependencies
-├── requirements-notebook.txt         # Jupyter notebook environment requirements
-├── submit_pipeline.sh                # Executable script for demonstration and evaluation
-├── custom_transformers.py           # Custom PySpark transformers (Haversine, IQR, TargetEncoder)
-├── mllib_pipeline.py                 # Feature engineering pipeline & distributed PCA
-├── feature_integration.py            # Flight feature contract and preprocessing helpers
-├── feature_contract.py               # Shared 23-feature schema contract
-├── inference.py                      # Spark Structured Streaming inference engine
-│
-├── docs/
-│   ├── REPORT.md                     # Comprehensive academic and technical report
-│   ├── PRODUCTION.md                 # Production deployment and serving runbook
-│   ├── assets/                       # PCA explained-variance plot
-│   ├── contracts/                    # Schema contracts and streaming sample payloads
-│   ├── dictionaries/                 # Data dictionaries and column specifications
-│   ├── evaluations/                  # Model tournament benchmarks and tuning records
-│   └── evidence/                     # Fresh-process execution logs and audit trail
-│
-├── scripts/                          # Offline training, verification, and utility tools
-│   ├── inference_sklearn_stream.py   # Baseline scikit-learn streaming fallback
-│   ├── fit_production_full_models.py # Fixed-parameter full pipeline fit and reload verification
-│   ├── prepare_data.py               # Raw CSV to partitioned Snappy Parquet converter
-│   ├── recover_final_spark_model.py  # Spark classification model refit
-│   ├── register_mlflow.py            # MLflow model registration helper
-│   ├── run_regression_tuning.ps1     # Distributed regression tuning runner
-│   ├── sfdws_model_spark_regression.py # Spark regression grid search
-│   ├── train_tournament.py          # Cross-validation and full pipeline model selection
-│   ├── validate_regression_production.py # Regression artifact validator
-│   └── validate_spark_model.py       # Fresh-process reload and OOT validator
-│
-├── tests/
-│   ├── test_custom_transformers.py   # Transformer unit tests
-│   └── test_end_to_end_pipeline.py   # Raw-input pipeline save/load test
-│
-├── notebooks/
-│   ├── 01_data_quality_profile.ipynb # Data quality analysis notebook
-│   └── README.md
-│
-├── data/                             # Raw and partitioned Parquet datasets (gitignored)
-├── models/                           # Serialized Spark PipelineModel artifacts (gitignored)
-└── vendor/                           # Bare-naked local filesystem shim for Windows
+custom_transformers.py       Custom estimators/models, Arrow Haversine and batch history features
+mllib_pipeline.py            Main ingestion → cross-validation → MLflow → model entry point
+benchmark_results.py         Measured metrics, PCA variance and fitted tree importance
+inference.py                 Saved full-pipeline Structured Streaming scoring
+submit_pipeline.sh           Fresh-process spark-submit streaming demonstration
+feature_integration.py       Optional batch-history feature adapter
+feature_contract.py          Legacy 23-feature model contract
+requirements.txt             Runtime and test dependencies
+requirements-notebook.txt    Optional notebook dependencies
+docs/REPORT.md               Mathematical report and historical benchmark analysis
+docs/PRODUCTION.md           Current training, evaluation and serving commands
+docs/SUBMISSION.md           Deliverable map and validation boundaries
+models/                      Generated full PipelineModel artifacts (excluded from Git)
+scripts/                     Data preparation, batch features, training implementation and legacy tools
+tests/                       Transformer, packaging and pipeline integration tests
+notebooks/                   Reproducible data-quality and transformer examples
+vendor/                      Windows Hadoop filesystem compatibility JAR
 ```
 
----
+## Setup
 
-## Environment Setup
-
-### Prerequisites
-- **Java:** OpenJDK / Eclipse Temurin JDK 17
-- **Python:** Python 3.11 or 3.12 (managed via `uv`, `venv`, or `conda`)
-- **Apache Spark:** PySpark 3.5.x
-- **PyArrow:** 14.x+ (for vectorized UDF acceleration)
-
-Set `JAVA_HOME` and include its `bin` directory in `PATH`:
-
-```powershell
-# Windows PowerShell
-$env:JAVA_HOME = "C:\path\to\jdk-17"
-$env:Path = "$env:JAVA_HOME\bin;$env:Path"
-```
-
-```bash
-# Linux / macOS / WSL
-export JAVA_HOME="/usr/lib/jvm/java-17-openjdk"
-export PATH="$JAVA_HOME/bin:$PATH"
-```
-
-Create environment and install dependencies:
+Use Python 3.11/3.12 and Java 17. Create a virtual environment and install:
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+export PYSPARK_PYTHON="$VIRTUAL_ENV/bin/python"
 ```
 
----
-
-## Pipeline Demonstration
-
-The project provides an automated demo runner (`submit_pipeline.sh`) that reloads a **full raw-input** `PipelineModel` in a fresh process and executes one Spark Structured Streaming microbatch. It never deletes an existing model or evidence directory:
+Place the extracted `flights.csv`, `airports.csv` and `airlines.csv` in
+`data/raw/`, then validate and convert them:
 
 ```bash
-MODEL_DIR=models/classification_full_pipeline ./submit_pipeline.sh classification
-MODEL_DIR=models/regression_full_pipeline ./submit_pipeline.sh regression
+spark-submit scripts/prepare_data.py --input-dir data/raw \
+  --output-dir data/typed-parquet
 ```
 
-The retired `random_forest_*_spark` artifacts contain only
-`VectorAssembler → RandomForest` and are intentionally rejected because they
-require a pre-built feature vector. Train a replacement model with the command
-below before running the demo. Default driver memory is 4 GB (configurable by
-`DRIVER_MEMORY`); the demo itself never retrains.
+The training input is `data/typed-parquet/flights`, containing raw typed columns,
+not a legacy model-ready feature matrix. Dataset files are excluded from Git.
 
-## Feature engineering
-
-Run preprocessing with the flight feature contract:
+## Train and reproduce
 
 ```bash
-spark-submit mllib_pipeline.py --input data/typed-parquet/flights \
-  --with-flight-features --airports data/typed-parquet/airports \
-  --output-dir models/preprocessing
+spark-submit --master 'local[4]' mllib_pipeline.py \
+  --task classification --input data/typed-parquet/flights \
+  --output models/classification_full_pipeline \
+  --results-dir artifacts/classification
+
+spark-submit --master 'local[4]' mllib_pipeline.py \
+  --task regression --input data/typed-parquet/flights \
+  --output models/regression_full_pipeline \
+  --results-dir artifacts/regression
 ```
 
-## Reproducible training and tournament
+The default tournament covers LinearSVC, RF and GBT for classification, and
+ElasticNet LR, Gamma/log GLM, RF and GBT for regression. Each task reuses one
+seeded 80/20 split; all candidates fit preprocessing inside five-fold
+`CrossValidator(parallelism=4)`. The winner is selected by training CV only.
+Held-out metrics, actual grids, plots and the exact test rows are saved under
+`--results-dir`. MLflow logs candidate parameters/metrics, the winning full
+pipeline and registry aliases `staging` and `production`.
 
-Install the pinned dependencies, ensure Java 17 is available, then point the
-training command at the raw typed flights Parquet directory:
+Gamma/log GLM uses a fixed label offset of 1,440 minutes because delay labels
+can be negative. The saved pipeline restores predictions to minutes. Adjust
+`--glm-offset` if necessary; nonpositive shifted training labels are rejected.
+This is a shifted-response baseline, not a Gamma distribution over signed delays.
+
+Use `--algorithms random_forest --small-grid --folds 2 --pca-k 2` for a smoke
+run. Smoke results do not reproduce full-data benchmarks. Output directories
+must be new; existing models/evaluations are preserved.
+
+## Evaluate and stream
 
 ```bash
-spark-submit scripts/train_tournament.py \
-  --task classification \
-  --input data/typed-parquet/flights \
-  --output models/classification_full_pipeline
+spark-submit benchmark_results.py --task classification \
+  --model models/classification_full_pipeline \
+  --input artifacts/classification/test_data \
+  --output-dir artifacts/classification_recheck
+
+./submit_pipeline.sh classification
+./submit_pipeline.sh regression
 ```
 
-The command builds one Spark `Pipeline` containing eligibility/label handling,
-custom preprocessing, categorical indexing/OHE, imputation, scaling, PCA and
-the estimator. Its `ParamGridBuilder` tournament is evaluated by a real
-three-fold `CrossValidator(parallelism=4)` and only then saves the measured
-best full `PipelineModel`. It does not embed or claim benchmark results.
+Tree feature importances refer to **PCA components**, the actual estimator
+inputs. They are measured from the loaded model. LinearSVC has no calibrated
+probability; its streaming probability field is null.
 
----
+## Optional batch features and tests
 
-## Production Models & Benchmarks
+`python scripts/build_modeling_dataset.py --help` documents optional Haversine,
+airline/airport/aircraft history and schedule features. These batch features
+require external history and are separate from stateless raw-event serving.
+For preprocessing analysis, use `mllib_pipeline.py --preprocess-only --help`.
 
-| Task | Champion Model | Architecture | Primary Metric (OOT) | Secondary Metric (OOT) |
-|---|---|---|---|---|
-| **Classification (SFDWS)** | Random Forest | 300 trees, depth 15 | **Gini: 0.6762** (KS: 0.5245) | Precision: 0.6076, Recall: 0.4821 |
-| **Regression (FDDPS)** | Random Forest | 500 trees, depth 15, leaf 5 | **$R^2$: 0.2678** | RMSE: 35.05 min, MAE: 17.10 min |
+```bash
+python -m pytest tests/ -q
+```
 
-- Runtime artifacts: `models/random_forest_final_spark` and `models/random_forest_regression_final_spark`.
-- Comprehensive academic documentation and mathematical proofs: [`docs/REPORT.md`](docs/REPORT.md).
-- Production deployment guide: [`docs/PRODUCTION.md`](docs/PRODUCTION.md).
-- Model tournament and grid search logs: [`docs/evaluations/REGRESSION_RESULTS.md`](docs/evaluations/REGRESSION_RESULTS.md).
-- Unit test suite: run `pytest tests/`.
+Historical 23-feature benchmarks in `docs/evaluations/` and `docs/REPORT.md`
+belong to legacy models. They are not measurements of the current raw-input
+pipeline; run the commands above to produce a new benchmark.

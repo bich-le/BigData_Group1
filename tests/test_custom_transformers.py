@@ -382,6 +382,7 @@ def test_route_congestion_counts_correctly(spark):
         ],
         ["ORIGIN_AIRPORT", "MONTH", "DAY", "scheduled_hour"],
     )
+    df = df.withColumn("YEAR", F.lit(2015))
     result = add_route_congestion_feature(df).collect()
 
     congestion_by_hour = {}
@@ -542,6 +543,7 @@ def test_airplane_level_schedule_count_same_day(spark):
         ["TAIL_NUMBER", "YEAR", "MONTH", "DAY", "SCHEDULED_DEPARTURE", "ARRIVAL_DELAY", "distance_feature_km"],
     )
     df = add_flight_timestamp_column(df)
+    df = df.withColumn("SCHEDULED_ARRIVAL", F.lit("1600"))
     result = build_airplane_level_features(df, lookback_windows=(7,)).collect()
 
     assert all(r["airplane_flights_scheduled_same_day"] == 2 for r in result)
@@ -560,3 +562,34 @@ def test_temporal_level_weekend_and_time_bucket(spark):
     assert by_hour[14] == (1, "afternoon")
     assert by_hour[19] == (0, "evening")
     assert by_hour[2] == (0, "night")
+
+
+def test_congestion_does_not_mix_years(spark):
+    from custom_transformers import add_route_congestion_feature
+    data = spark.createDataFrame([
+        ("JFK", 2015, 1, 1, 9), ("JFK", 2015, 1, 1, 9), ("JFK", 2016, 1, 1, 9),
+    ], ["ORIGIN_AIRPORT", "YEAR", "MONTH", "DAY", "scheduled_hour"])
+    rows = add_route_congestion_feature(data).select("YEAR", "route_congestion_count").collect()
+    assert {(row.YEAR, row.route_congestion_count) for row in rows} == {(2015, 2), (2016, 1)}
+
+
+def test_airport_windows_use_hours_and_exclude_current_flight(spark):
+    from custom_transformers import add_flight_timestamp_column, build_airport_level_features
+    data = spark.createDataFrame([
+        ("JFK", "LAX", 2015, 1, 1, "0800", 40.0),
+        ("JFK", "LAX", 2015, 1, 1, "1200", 0.0),
+    ], ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT", "YEAR", "MONTH", "DAY", "SCHEDULED_DEPARTURE", "ARRIVAL_DELAY"])
+    rows = build_airport_level_features(add_flight_timestamp_column(data), lookback_windows_hours=(3, 6)).orderBy("SCHEDULED_DEPARTURE").collect()
+    assert rows[1]["airport_avg_delay_lag3h"] is None
+    assert rows[1]["airport_avg_delay_lag6h"] == 40.0
+
+
+def test_haversine_mapping_preserves_original_airport_columns(spark):
+    airports = spark.createDataFrame([("JFK", 40.64, -73.78), ("LAX", 33.94, -118.41)], ["IATA_CODE", "LATITUDE", "LONGITUDE"])
+    flights = spark.createDataFrame([("12478", "LAX", 2475.0)], ["ORIGIN_AIRPORT", "DESTINATION_AIRPORT", "DISTANCE"])
+    mapping = spark.createDataFrame([("12478", "JFK")], ["AIRPORT_CODE", "IATA_CODE"])
+    row = add_haversine_distance_feature(flights, airports, airport_mapping_df=mapping).first()
+    assert row.ORIGIN_AIRPORT == "12478"
+    assert row.DESTINATION_AIRPORT == "LAX"
+    assert row.has_haversine_distance
+    assert 3900 < row.distance_feature_km < 4100

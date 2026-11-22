@@ -87,3 +87,5 @@ mlflow.db-*
 tmp/
 artifacts/
 derby.log
+
+*.pt

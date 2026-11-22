@@ -10,6 +10,7 @@ from pyspark.sql import DataFrame, functions as F
 
 
 LOOKBACK_WINDOWS = (1, 3, 7)
+AIRPORT_LOOKBACK_HOURS = (3, 6, 12)
 IQR_INPUT_COLS = ("distance_feature_km", "SCHEDULED_TIME")
 IQR_OUTPUT_COLS = ("distance_feature_km_clipped", "scheduled_time_clipped")
 IQR_FLAG_COLS = ("distance_feature_km_is_outlier", "scheduled_time_is_outlier")
@@ -90,18 +91,20 @@ class FlightFeatureContract:
                     f"airline_distinct_tails_late{suffix}",
                     f"airline_late_flight_ratio{suffix}",
                     f"airline_delay_per_tail{suffix}",
-                    f"airport_late_flights_count{suffix}",
-                    f"airport_avg_delay{suffix}",
                     f"airplane_total_delay_minutes{suffix}",
                     f"airplane_delay_per_km{suffix}",
                 ]
             )
+
+        for hours in AIRPORT_LOOKBACK_HOURS:
+            cols.extend([f"airport_late_flights_count_lag{hours}h", f"airport_avg_delay_lag{hours}h"])
 
         cols.extend(
             [
                 "airport_scheduled_departures_same_day",
                 "airport_scheduled_arrivals_same_day",
                 "airplane_flights_scheduled_same_day",
+                "airplane_prev_flight_arrival_delay",
             ]
         )
 
@@ -111,6 +114,8 @@ class FlightFeatureContract:
                     "DEPARTURE_DELAY",
                     "flight_departure_delay_per_km",
                     "flight_departure_delay_vs_airline_avg_rt_lag7d",
+                    "flight_computed_scheduled_duration_minutes",
+                    "flight_scheduled_minutes_per_km",
                 ]
             )
         return tuple(cols)
@@ -150,6 +155,7 @@ def build_flight_feature_frame(
             "DESTINATION_AIRPORT",
             "SCHEDULED_DEPARTURE",
             "SCHEDULED_TIME",
+            "SCHEDULED_ARRIVAL",
             "DISTANCE",
             "ARRIVAL_DELAY",
         ),
@@ -168,7 +174,7 @@ def build_flight_feature_frame(
         df, lookback_windows=contract.lookback_windows
     )
     df = feature_module.build_airport_level_features(
-        df, lookback_windows=contract.lookback_windows
+        df, lookback_windows_hours=AIRPORT_LOOKBACK_HOURS
     )
     df = feature_module.build_airplane_level_features(
         df, lookback_windows=contract.lookback_windows

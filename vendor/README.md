@@ -2,7 +2,7 @@
 
 `hadoop-bare-naked-local-fs-0.1.0.jar` is the Apache-2.0 GlobalMentor Hadoop
 Bare Naked Local FileSystem library. `mllib_pipeline.configure_local_filesystem`
-loads it only for a local checkout where the JAR exists. It lets PySpark persist
+loads it only on Windows when the JAR exists. It lets PySpark persist
 the MLflow Spark model on Windows without `winutils.exe`.
 
 Maven coordinate: `com.globalmentor:hadoop-bare-naked-local-fs:0.1.0`.
